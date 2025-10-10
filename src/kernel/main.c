@@ -1,7 +1,8 @@
 #include "arch/mod.h"
 #include "lib/mod.h"
 
-int main()
-{
-    
+void main(void) {
+    // TODO
+    for (;;)
+        asm volatile("wfi");
 }
