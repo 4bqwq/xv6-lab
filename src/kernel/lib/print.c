@@ -58,9 +58,9 @@ static void printptr(uint64 x)
     提示: stdarg.h中的va_list中包括你需要的参数地址
 */
 void printf(const char *fmt, ...) {
+    spinlock_acquire(&print_lk);
     va_list ap;
     va_start(ap, fmt);
-
     for (const char *p = fmt; *p; ++p) {
         if (*p != '%') { uart_putc_sync(*p); continue; }
         ++p; // skip '%'
@@ -106,6 +106,7 @@ void printf(const char *fmt, ...) {
     }
 
     va_end(ap);
+    spinlock_release(&print_lk);
 }
 
 /* 如果发生panic, UART的停止标志 */
