@@ -6,7 +6,70 @@
 
 ---
 
-## 一、完成的模块实现概述
+## 一、运行方法（Ubuntu）
+
+### 1. 环境准备
+
+安装依赖：
+
+```bash
+sudo apt update
+sudo apt install -y build-essential make qemu-system-misc gcc-riscv64-linux-gnu
+```
+
+### 2. 获取项目
+
+```bash
+git clone https://github.com/4bqwq/xv6-lab.git
+cd xv6-lab
+```
+
+### 3. 编译内核
+
+```bash
+make build
+```
+
+生成的文件位于：
+
+```
+target/kernel/kernel-qemu.elf
+```
+
+### 4. 运行实验
+
+```bash
+qemu-system-riscv64 -machine virt -bios none \
+  -kernel target/kernel/kernel-qemu.elf \
+  -m 128M -smp 2 -nographic
+```
+
+要退出 QEMU，按：
+
+```
+Ctrl + a，然后按 x
+```
+
+### 5. 示例输出
+
+运行成功后，终端会出现类似输出：
+
+```
+cpu 0 is booting!
+cpu 1 is booting!
+```
+
+不同实验部分的输出内容可能略有不同，但看到多个 CPU 启动信息即表示系统正常运行。
+
+### 6. 清理构建结果
+
+```bash
+make clean
+```
+
+---
+
+## 二、完成的模块实现概述
 
 这次实验中，我主要修改和补全了四个文件：`start.c`、`print.c`、`spinlock.c` 和 `main.c`。
 大部分框架其实在模板里已经给好了，我做的工作主要是把关键的函数逻辑补上。下面是每个部分的具体说明。
@@ -229,7 +292,7 @@ void main(void) {
 
 ---
 
-## 二、并行实验
+## 三、并行实验
 
 ### 2.1 并行加法
 
@@ -375,8 +438,7 @@ void main(void) {
 
 ---
 
-
-## 三、时间记录
+## 四、时间记录
 
 本实验历时约 2 天：
 
