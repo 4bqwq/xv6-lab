@@ -60,6 +60,8 @@ ifeq ($(wildcard $(TARGET)),)
 	@mkdir -p $(TARGET)/kernel/arch
 	@mkdir -p $(TARGET)/kernel/boot
 	@mkdir -p $(TARGET)/kernel/lock
+	@mkdir -p $(TARGET)/kernel/trap
+	@mkdir -p $(TARGET)/kernel/mem
 	@mkdir -p $(TARGET)/kernel/lib
 endif
 
