@@ -1,3 +1,5 @@
+# 读入 Makefile 时就先把目标目录建好（不会影响其它规则）
+$(shell mkdir -p target/kernel/boot target/kernel/lib target/kernel/lock target/kernel/mem target/kernel/trap)
 # 引入通用配置文件
 include common.mk
 

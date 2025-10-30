@@ -15,6 +15,8 @@
 
 // 物理页是最基本的资源单位, 大小设置为4KB
 #define PGSIZE 4096
+#define PGROUNDUP(x) (((uint64)(x) + PGSIZE - 1) & ~(PGSIZE -1) )
+#define PGROUNDDOWN(x) ((uint64)(x) & ~(PGSIZE -1))
 
 // 物理页节点
 typedef struct page_node
@@ -93,8 +95,9 @@ typedef uint64 pte_t;
 typedef pte_t* pgtbl_t;
 
 // satp寄存器相关
-#define SATP_SV39 (8L << 60)                                           // MODE = SV39
-#define MAKE_SATP(pagetable) (SATP_SV39 | (((uint64)pagetable) >> 12)) // 设置MODE和PPN字段
+#define SATP_SV39 (1UL << 60)  // 用括号确保操作顺序
+#define MAKE_SATP(pagetable) ((SATP_SV39) | (((uint64)(pagetable)) >> 12))  // 确保 pagetable 强制类型转换且括号完整
+
 
 // 获取虚拟地址中的虚拟页(VPN)信息 占9bit
 #define VA_SHIFT(level) (12 + 9 * (level))

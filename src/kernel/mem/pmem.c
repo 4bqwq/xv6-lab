@@ -1,13 +1,13 @@
 #include "mod.h"
 
 // 内核空间和用户空间的可分配物理页分开描述
-static alloc_region_t kern_region, user_region;
+alloc_region_t kern_region, user_region;
 
 // 把 [begin, end) 切成 4KB 页，建立“空闲页单链表”到 r->list_head
 static void region_build(alloc_region_t *r, uint64 begin, uint64 end) {
     r->begin = PGROUNDUP(begin);
     r->end   = PGROUNDDOWN(end);
-    initlock(&r->lk, "pmem_region");
+    spinlock_init(&r->lk, "pmem_region");
     r->allocable = 0;
     r->list_head.next = NULL;
 
@@ -41,13 +41,13 @@ void pmem_init(void)
 
 // 从 region 弹出一个 4KB 页（清零后返回）；失败 panic
 static void* region_alloc(alloc_region_t *r) {
-    acquire(&r->lk);
+    spinlock_acquire(&r->lk);
     page_node_t *n = r->list_head.next;
     if (n) {
         r->list_head.next = n->next;
         r->allocable--;
     }
-    release(&r->lk);
+    spinlock_release(&r->lk);
     if (!n) panic("pmem_alloc: out of memory");
     memset((void*)n, 0, PGSIZE);
     return (void*)n;
@@ -58,11 +58,11 @@ static void region_free(alloc_region_t *r, uint64 page) {
     assert(page % PGSIZE == 0, "pmem_free: not aligned");
     assert(page >= r->begin && page + PGSIZE <= r->end, "pmem_free: out of range");
     page_node_t *n = (page_node_t *)page;
-    acquire(&r->lk);
+    spinlock_acquire(&r->lk);
     n->next = r->list_head.next;
     r->list_head.next = n;
     r->allocable++;
-    release(&r->lk);
+    spinlock_release(&r->lk);
 }
 
 // 尝试返回一个可分配的清零后的物理页；失败则 panic 锁死

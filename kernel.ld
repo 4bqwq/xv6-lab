@@ -4,6 +4,8 @@ ENTRY( _entry )
 SECTIONS
 {
   . = 0x80000000;
+  
+  KERNEL_START = .;
 
   .text : {
     *(.text .text.*)
@@ -41,4 +43,6 @@ SECTIONS
   . = ALIGN(4096);
   PROVIDE(ALLOC_BEGIN = .);
   PROVIDE(ALLOC_END = 0x80000000 + 128M);
+  
+  KERNEL_END = .;
 }
