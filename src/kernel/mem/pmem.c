@@ -34,9 +34,9 @@ void pmem_init(void)
     region_build(&kern_region, a_begin, kern_end);
     region_build(&user_region, kern_end, a_end);
 
-    printf("[pmem] kern [%p, %p) pages=%d; user [%p, %p) pages=%d\n",
+    /*printf("[pmem] kern [%p, %p) pages=%d; user [%p, %p) pages=%d\n",
            kern_region.begin, kern_region.end,  (int)kern_region.allocable,
-           user_region.begin, user_region.end,  (int)user_region.allocable);
+           user_region.begin, user_region.end,  (int)user_region.allocable);*/
 }
 
 // 从 region 弹出一个 4KB 页（清零后返回）；失败 panic
