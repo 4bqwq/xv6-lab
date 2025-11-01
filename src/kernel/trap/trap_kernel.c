@@ -65,6 +65,8 @@ void trap_kernel_inithart()
 
     // 打开 S-mode 软件中断（SSIE）
     w_sie(r_sie() | SIE_SSIE);
+    // 打开外部中断（SEIE）
+    w_sie(r_sie() | SIE_SEIE);
 
     // 打开中断
     intr_on();
@@ -120,7 +122,20 @@ void trap_kernel_handler()
 // 外设中断处理 (基于PLIC，lab-3只需要识别和处理UART中断)
 void external_interrupt_handler()
 {
+    int irq = plic_claim();     // 取中断号
 
+    if (irq == UART_IRQ) {
+        // 串口中断，调用UART
+        uart_intr();
+    } else if (irq != 0) {
+        // 其它外设，目前应该是还没用，暂时做个提示
+        printf("[trap] unexpected PLIC irq=%d\n", irq);
+    }
+
+    if (irq != 0) {
+        // 通知 PLIC 继续发下一个
+        plic_complete(irq);
+    }
 }
 
 // 时钟中断处理 (基于CLINT)

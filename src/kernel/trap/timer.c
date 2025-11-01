@@ -57,7 +57,7 @@ void timer_update(void)
 
     // 每 10 个 tick 打一个点
     if ((sys_timer.ticks % 10UL) == 0UL && mycpuid() == 0) {
-        printf(".");
+        // printf(".");
     }
 }
 
