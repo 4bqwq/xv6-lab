@@ -34,3 +34,13 @@ typedef struct {
     volatile uint64 ticks;
 } timer_t;
 
+// S-mode interrupt enable bits
+#ifndef SIE_SSIE
+#define SIE_SSIE (1 << 1)   // software interrupt enable
+#endif
+#ifndef SIE_STIE
+#define SIE_STIE (1 << 5)   // timer interrupt enable
+#endif
+#ifndef SIE_SEIE
+#define SIE_SEIE (1 << 9)   // external interrupt enable
+#endif

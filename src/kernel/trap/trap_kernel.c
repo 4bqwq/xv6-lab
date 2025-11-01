@@ -63,8 +63,12 @@ void trap_kernel_inithart()
     // 填写内核态中断处理函数
     w_stvec((uint64)kernel_vector);
 
+    // 打开 S-mode 软件中断（SSIE）
+    w_sie(r_sie() | SIE_SSIE);
+
     // 打开中断
     intr_on();
+    
 }
 
 // 在kernel_vector()里面调用
@@ -87,6 +91,13 @@ void trap_kernel_handler()
         // 1-中断处理
         switch (trap_id) // 中断产生原因分类
         {
+        case 1: // S-mode software interrupt
+            timer_interrupt_handler();
+            break;
+
+        case 9: // S-mode external interrupt
+            external_interrupt_handler();
+            break;
 
         default: // 例外处理
             printf("\nunexpected interrupt: %s\n", interrupt_info[trap_id]);

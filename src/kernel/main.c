@@ -1,6 +1,7 @@
 #include "arch/mod.h"
 #include "lib/mod.h"
 #include "mem/mod.h"
+#include "trap/mod.h"
 
 // ========================= 入口 =========================
 void main(void)
@@ -12,6 +13,9 @@ void main(void)
     pmem_init();
     kvm_init();
     kvm_inithart();
+
+    trap_kernel_init();
+    trap_kernel_inithart();
 
     printf("cpu %d is booting!\n", mycpuid());
 
