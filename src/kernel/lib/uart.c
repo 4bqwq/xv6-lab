@@ -62,11 +62,23 @@ int uart_getc_sync(void)
 // 中断处理(键盘输入->屏幕输出)
 void uart_intr(void)
 {
-	while (1)
-	{
-		int c = uart_getc_sync();
-		if (c == -1)
-		break;
-		uart_putc_sync(c);
-	}
+    while (1) {
+        int c = uart_getc_sync();
+        if (c == -1) break;
+
+        if (c == '\r') {
+            // CR 回显 CRLF
+            uart_putc_sync('\r');
+            uart_putc_sync('\n');
+        } else if (c == '\b' || c == 0x7f) {
+            // Backspace/DEL 回显退格删除
+            uart_putc_sync('\b');
+            uart_putc_sync(' ');
+            uart_putc_sync('\b');
+        } else {
+            // 普通字符原样回显
+            uart_putc_sync(c);
+        }
+    }
 }
+
