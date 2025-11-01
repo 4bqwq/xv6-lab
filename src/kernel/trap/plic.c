@@ -1,3 +1,6 @@
+#include "../arch/mod.h"
+#include "../lib/mod.h"
+#include "type.h"
 #include "mod.h"
 
 // PLIC初始化

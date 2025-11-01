@@ -17,3 +17,20 @@
 #define CLINT_MSIP(hartid) (CLINT_BASE + 4 * (hartid))
 #define CLINT_MTIMECMP(hartid) (CLINT_BASE + 0x4000 + 8 * (hartid))
 #define CLINT_MTIME (CLINT_BASE + 0xBFF8)
+
+#define UART_IRQ 10
+
+// === timer config & types ===
+#ifndef INTERVAL
+#define INTERVAL 100000UL
+#endif
+
+// M-mode timer interrupt enable
+#ifndef MIE_MTIE
+#define MIE_MTIE (1 << 7)   // mie.MTIE = bit7
+#endif
+
+typedef struct {
+    volatile uint64 ticks;
+} timer_t;
+
