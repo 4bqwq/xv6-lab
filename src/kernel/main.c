@@ -3,23 +3,28 @@
 #include "mem/mod.h"
 #include "trap/mod.h"
 
+static volatile int started = 0;
+
 // ========================= 入口 =========================
 void main(void)
 {
-    // 只让 CPU0 跑，避免多核并发改页表/打印冲突
-    if (mycpuid() != 0) { for(;;) asm volatile("wfi"); }
+    if (mycpuid() == 0) {
+        print_init();
+        pmem_init();
+        kvm_init();
+        trap_kernel_init();
 
-    print_init();
-    pmem_init();
-    kvm_init();
+        __sync_synchronize();
+        started = 1;
+    } else {
+        while (started == 0) { }
+        __sync_synchronize();
+    }
+
     kvm_inithart();
-
-    trap_kernel_init();
     trap_kernel_inithart();
 
     printf("cpu %d is booting!\n", mycpuid());
 
-    // 保持 QEMU 运行，便于观察；退出用 Ctrl-A 然后 X
-    for(;;) asm volatile("wfi");
+    for (;;) asm volatile("wfi");
 }
-

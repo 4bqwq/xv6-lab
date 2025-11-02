@@ -18,13 +18,13 @@ void start()
     // 允许 S 模式访问 mcycle/minstret/mtime
     w_mcounteren(0x7);
 
-    // 初始化定时器
-    timer_init();
-
     // 切换到S-mode后无法访问M-mode的寄存器
     // 所以需要将hartid存到可访问的寄存器tp
     int id = r_mhartid();
     w_tp(id);
+    
+    // 初始化定时器
+    timer_init();
 
     // 修改mstatus寄存器，假装上一个状态是S-mode
     uint64 status = r_mstatus();

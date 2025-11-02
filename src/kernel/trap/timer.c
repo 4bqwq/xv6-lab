@@ -54,11 +54,6 @@ void timer_create()
 void timer_update(void)
 {
     sys_timer.ticks++;
-
-    // 每 10 个 tick 打一个点
-    if ((sys_timer.ticks % 10UL) == 0UL && mycpuid() == 0) {
-        // printf(".");
-    }
 }
 
 // 获取滴答数量 (不把sys_timer暴露出去, 只提供安全的访问接口)
