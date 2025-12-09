@@ -95,7 +95,7 @@ typedef uint64 pte_t;
 typedef pte_t* pgtbl_t;
 
 // satp寄存器相关
-#define SATP_SV39 (1UL << 60)  // 用括号确保操作顺序
+#define SATP_SV39 (8UL << 60)  // 用括号确保操作顺序
 #define MAKE_SATP(pagetable) ((SATP_SV39) | (((uint64)(pagetable)) >> 12))  // 确保 pagetable 强制类型转换且括号完整
 
 
@@ -125,3 +125,9 @@ typedef pte_t* pgtbl_t;
 
 // 定义一个非常大的VA, 正常来说所有VA不得大于它
 #define VA_MAX (1ul << 38)
+
+// 用户/内核共享的 trampoline 代码页: 虚拟地址空间的最高一页
+#define TRAMPOLINE (VA_MAX - PGSIZE)
+
+// trapframe 所在页: 紧挨着 TRAMPOLINE 之下的一页
+#define TRAPFRAME  (TRAMPOLINE - PGSIZE)

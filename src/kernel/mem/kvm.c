@@ -3,6 +3,7 @@
 //================= 链接脚本符号（按你的 kernel.ld 名字有差异就改） =================
 extern char KERNEL_START[];   // 内核镜像起始
 extern char KERNEL_END[];     // 内核镜像结束
+extern char trampoline[];
 
 //================= 内核根页表 ======================================================
 static pgtbl_t kernel_pgtbl;
@@ -40,9 +41,10 @@ pte_t *vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc)
 void vm_mappages(pgtbl_t pgtbl, uint64 va, uint64 pa, uint64 len, int perm)
 {
     assert(len > 0 && va + len <= VA_MAX, "vm_mappages: range");
+    assert((va % PGSIZE) == 0 && (pa % PGSIZE) == 0, "vm_mappages: va/pa not page-aligned");
 
-    uint64 a    = PGROUNDDOWN(va);
-    uint64 p    = PGROUNDDOWN(pa);
+    uint64 a    = va;
+    uint64 p    = pa;
     uint64 last = PGROUNDDOWN(va + len - 1);
 
     for (;;) {
@@ -101,10 +103,13 @@ static void map_kernel_and_io(pgtbl_t pt)
     uint64 ae = PGROUNDDOWN((uint64)ALLOC_END);
     if (ae > ab)
         vm_mappages(pt, ab, ab, ae - ab, PTE_R|PTE_W);
+    
+    //trampoline: 内核和用户共享的一页跳板代码
+    vm_mappages(pt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
 //================= 初始化内核根页表 & 开启分页 =====================================
-void kvm_init(void)
+void kvm_init()
 {
     kernel_pgtbl = (pgtbl_t)pmem_alloc(true);
     assert(kernel_pgtbl != NULL , "kvm_init: no mem for root pgtbl");
@@ -112,7 +117,7 @@ void kvm_init(void)
     map_kernel_and_io(kernel_pgtbl);
 }
 
-void kvm_inithart(void)
+void kvm_inithart()
 {
     w_satp(MAKE_SATP(kernel_pgtbl));
     sfence_vma();
@@ -128,10 +133,8 @@ void kvm_clone_kernel_map(pgtbl_t dst)
 }
 
 //================= 调试：打印页表 ================================================
-// 替换 kvm.c 里的 vm_print
 void vm_print(pgtbl_t pgtbl)
 {
-    const int MAX_L0_SHOW = 3; // 每个 level-0 最多展示几条
 
     pgtbl_t pgtbl_2 = pgtbl, pgtbl_1 = NULL, pgtbl_0 = NULL;
     pte_t pte;
@@ -151,21 +154,21 @@ void vm_print(pgtbl_t pgtbl)
             pgtbl_0 = (pgtbl_t)PTE_TO_PA(pte);
             printf(".. .. level-0 pgtbl %d: pa = %p\n", j, pgtbl_0);
 
-            int shown = 0, total = 0;
+            //int shown = 0, total = 0;
             for (int k = 0; k < PGSIZE / sizeof(pte_t); k++) {
                 pte = pgtbl_0[k];
                 if (!(pte & PTE_V)) continue;
-                total++;
-                if (shown < MAX_L0_SHOW) {
-                    assert(!PTE_CHECK(pte), "vm_print: pte check fail (3)");
-                    printf(".. .. .. physical page %d: pa = %p flags = %d\n",
-                           k, (void*)PTE_TO_PA(pte), (int)PTE_FLAGS(pte));
-                    shown++;
-                }
+            //    total++;
+            //    if (shown < MAX_L0_SHOW) {
+                assert(!PTE_CHECK(pte), "vm_print: pte check fail (3)");
+                printf(".. .. .. physical page %d: pa = %p flags = %d\n",
+                       k, (void*)PTE_TO_PA(pte), (int)PTE_FLAGS(pte));
+            //        shown++;
+            //    }
             }
-            if (total > shown) {
-                printf(".. .. .. ... (%d more)\n", total - shown);
-            }
+            //if (total > shown) {
+            //    printf(".. .. .. ... (%d more)\n", total - shown);
+            //}
         }
     }
 }

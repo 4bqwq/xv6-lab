@@ -2,29 +2,36 @@
 #include "lib/mod.h"
 #include "mem/mod.h"
 #include "trap/mod.h"
+#include "proc/mod.h"
 
-static volatile int started = 0;
+volatile static int started = 0;
 
-// ========================= 入口 =========================
-void main(void)
+int main()
 {
-    if (mycpuid() == 0) {
+    int cpuid = r_tp();
+
+    if (cpuid == 0) {
+
         print_init();
+        printf("cpu %d is booting!\n", cpuid);
+
         pmem_init();
         kvm_init();
+        kvm_inithart();
         trap_kernel_init();
-
+        trap_kernel_inithart();
+        proc_make_first();
         __sync_synchronize();
         started = 1;
     } else {
-        while (started == 0) { }
+
+        while (started == 0)
+            ;
         __sync_synchronize();
+        printf("cpu %d is booting!\n", cpuid);
+        kvm_inithart();
+        trap_kernel_inithart();
     }
-
-    kvm_inithart();
-    trap_kernel_inithart();
-
-    printf("cpu %d is booting!\n", mycpuid());
-
-    for (;;) asm volatile("wfi");
+    while (1)
+        ;
 }
