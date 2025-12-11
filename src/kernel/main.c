@@ -23,6 +23,9 @@ int main()
         proc_make_first();
         __sync_synchronize();
         started = 1;
+        
+        // 启动第一个进程
+        proc_start_first();
     } else {
 
         while (started == 0)
@@ -31,7 +34,12 @@ int main()
         printf("cpu %d is booting!\n", cpuid);
         kvm_inithart();
         trap_kernel_inithart();
+        
+        // 其他CPU进入无限循环
+        while (1)
+            ;
     }
-    while (1)
+    
+    while(1)
         ;
 }

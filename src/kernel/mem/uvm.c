@@ -1,20 +1,62 @@
 #include "mod.h"
 #include "../lib/mod.h"
 
+// 辅助：根据用户页表 pgtbl 和用户虚拟地址 va，找到该页对应的物理页基址
+static uint64 walk_user_va(pgtbl_t pgtbl, uint64 va)
+{
+    pte_t *pte = vm_getpte(pgtbl, va, false);
+    assert(pte != NULL, "uvm: vm_getpte returned NULL");
+    assert((*pte) & PTE_V, "uvm: pte not valid");
+
+    return (uint64)PTE_TO_PA(*pte);  // 页框物理地址（页内偏移还要自己加）
+}
+
 /*--------------------part-1: 关于内核空间<->用户空间的数据传递--------------------*/
 
 // 用户态地址空间[src, src+len) 拷贝至 内核态地址空间[dst, dst+len)
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyin(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
 {
+    while (len > 0)
+    {
+        uint64 va0 = PGROUNDDOWN(src);    // 当前用户页首地址
+        uint32 off = (uint32)(src - va0); // 页内偏移
+        uint32 npage = PGSIZE - off;      // 当前页还能拷多少字节
+        uint32 n = (len < npage) ? len : npage;
 
+        uint64 pa0 = walk_user_va(pgtbl, va0); // 这一页的物理基址
+        void* k_src = (void*)(pa0 + off);      // 真正的物理地址 + 偏移
+        void* k_dst = (void*)dst;
+
+        memmove(k_dst, k_src, n);
+
+        dst += n;
+        src += n;
+        len -= n;
+    }
 }
 
 // 内核态地址空间[src, src+len） 拷贝至 用户态地址空间[dst, dst+len)
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyout(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
 {
+    while (len > 0)
+    {
+        uint64 va0 = PGROUNDDOWN(dst);    // 当前用户页首地址
+        uint32 off = (uint32)(dst - va0); // 页内偏移
+        uint32 npage = PGSIZE - off;      // 当前页还能写多少字节
+        uint32 n = (len < npage) ? len : npage;
 
+        uint64 pa0 = walk_user_va(pgtbl, va0);
+        void* k_dst = (void*)(pa0 + off); // 写入到此物理地址
+        void* k_src = (void*)src;
+
+        memmove(k_dst, k_src, n);
+
+        dst += n;
+        src += n;
+        len -= n;
+    }
 }
 
 // 用户态字符串拷贝到内核态
@@ -22,21 +64,18 @@ void uvm_copyout(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
 // 注意: src dst 不一定是 page-aligned
 void uvm_copyin_str(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 maxlen)
 {
-    // 临时实现，后续需要完善
     char *dst_ptr = (char *)dst;
     uint32 i;
     for (i = 0; i < maxlen - 1; i++) {
         char c = 0;  // 初始化变量
-        // 由于uvm_copyin是void函数，我们暂时不检查返回值
+        // 逐字节拷贝，直到遇到'\0'或达到最大长度
         uvm_copyin(pgtbl, (uint64)&c, src + i, 1);
         dst_ptr[i] = c;
         if (c == '\0') {
-            break;
+            break;  // 遇到字符串结束符则停止
         }
     }
-    if (i == maxlen - 1) {
-        dst_ptr[i] = '\0';
-    }
+    dst_ptr[i] = '\0';  // 确保字符串以'\0'结尾
 }
 
 /*--------------------part-2: mmap_region相关--------------------*/

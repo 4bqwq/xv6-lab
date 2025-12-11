@@ -4,3 +4,4 @@
 
 pgtbl_t proc_pgtbl_init(uint64 trapframe);
 void proc_make_first();
+void proc_start_first();

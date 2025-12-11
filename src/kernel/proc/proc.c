@@ -125,10 +125,16 @@ void proc_make_first()
     // ---------- 9. 把当前 CPU 绑定到 proczero 并切换过去 ----------
     cpu_t *c = mycpu();
     c->proc = p;
+}
 
+// 启动第一个进程并切换上下文
+void proc_start_first()
+{
+    proc_t *p = &proczero;
+    cpu_t *c = mycpu();
+    
     // 从 CPU 的 ctx 切换到进程的 ctx
     swtch(&c->ctx, &p->ctx);
 
     // 正常情况下不会返回到这里
 }
-
