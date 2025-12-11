@@ -1,5 +1,6 @@
 #pragma once
 #include "../arch/type.h"
+#include "../mem/type.h"
 
 // 同优先级的上下文
 typedef struct context
@@ -77,6 +78,7 @@ typedef struct proc
     uint64 heap_top;     // 用户堆顶(以字节为单位)
     uint64 ustack_npage; // 用户栈占用的页面数量
     trapframe_t *tf;     // 用户态内核态切换时的运行环境暂存空间
+    mmap_region_t *mmap; // mmap区域链表头
 
     uint64 kstack;       // 内核栈的虚拟地址
     context_t ctx;       // 内核态进程上下文

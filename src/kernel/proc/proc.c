@@ -122,7 +122,10 @@ void proc_make_first()
     p->ctx.sp = p->kstack + PGSIZE;
     p->ctx.ra = (uint64)trap_user_return;
 
-    // ---------- 9. 把当前 CPU 绑定到 proczero 并切换过去 ----------
+    // ---------- 9. 初始化 mmap 链表 ----------
+    p->mmap = 0;  // 初始时 mmap 链表为空
+
+    // ---------- 10. 把当前 CPU 绑定到 proczero 并切换过去 ----------
     cpu_t *c = mycpu();
     c->proc = p;
 }
