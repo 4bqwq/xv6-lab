@@ -1,6 +1,7 @@
 #include "mod.h"
 #include "../syscall/mod.h"   // 间接包含 ../syscall/type.h
 #include "../mem/type.h"
+#include "../mem/mod.h"
 
 // in trampoline.S
 extern char trampoline[];  // 内核和用户切换的代码
@@ -76,6 +77,36 @@ void trap_user_handler(void)
             syscall();
 
             break;
+        }
+        case 15: { // Store/AMO page fault
+            // 检查是否是栈扩展
+            uint64 fault_addr = stval;
+            // 用户栈的底部是 TRAPFRAME - p->ustack_npage * PGSIZE
+            uint64 current_ustack_bottom = TRAPFRAME - p->ustack_npage * PGSIZE;
+            
+            // 如果是栈区域的页面错误，尝试扩展栈
+            // 故障地址应该在当前栈底部下方一页内，且在TRAPFRAME上方
+            if (fault_addr < current_ustack_bottom && fault_addr >= TRAPFRAME - PGSIZE * 10) {
+                // 使用uvm_ustack_grow函数扩展用户栈
+                uint64 old_ustack_npage = p->ustack_npage;
+                uint64 new_ustack_npage = uvm_ustack_grow(p->pgtbl, p->ustack_npage, fault_addr);
+                
+                if (new_ustack_npage != (uint64)-1) {
+                    p->ustack_npage = new_ustack_npage;
+                    
+                    printf("page fault occured! trap id = %d\n", trap_id);
+                    printf("ustack_npage: %d -> %d\n", old_ustack_npage, p->ustack_npage);
+                    
+                    // 重新执行导致页面错误的指令
+                    break;
+                } else {
+                    panic("trap_user_handler: uvm_ustack_grow failed for stack expansion");
+                }
+            } else {
+                printf("\nunexpected exception (from user): %s\n", exception_info[trap_id]);
+                printf("trap_id = %d, sepc = %p, stval = %p\n", trap_id, sepc, stval);
+                panic("trap_user_handler");
+            }
         }
         default:
             printf("\nunexpected exception (from user): %s\n", exception_info[trap_id]);

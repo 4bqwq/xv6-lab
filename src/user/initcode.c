@@ -2,23 +2,32 @@
 
 #define PGSIZE 4096
 
-// brk 接口只接受绝对地址, 这里把"当前堆顶 + 偏移"转换成它要的参数
-static long long adjust_heap(long long base, long long delta)
-{
-    long long target = base + delta;
-    return syscall(SYS_brk, target);
-}
-
 int main()
 {
-    long long heap_top = syscall(SYS_brk, 0); // 先看初始堆顶
+    char tmp[PGSIZE * 4];
 
-    long long plan[] = {9 * PGSIZE, 0, -5 * PGSIZE};
-    for (int i = 0; i < 3; i++) {
-        heap_top = adjust_heap(heap_top, plan[i]);
-    }
+    // 访问更深的栈地址：强制用到第 4 页
+    tmp[PGSIZE * 3] = 'h';
+    tmp[PGSIZE * 3 + 1] = 'e';
+    tmp[PGSIZE * 3 + 2] = 'l';
+    tmp[PGSIZE * 3 + 3] = 'l';
+    tmp[PGSIZE * 3 + 4] = 'o';
+    tmp[PGSIZE * 3 + 5] = '\0';
+
+    syscall(SYS_copyinstr, tmp + PGSIZE * 3);
+
+    // 再访问栈顶附近（第 1 页）
+    tmp[0] = 'w';
+    tmp[1] = 'o';
+    tmp[2] = 'r';
+    tmp[3] = 'l';
+    tmp[4] = 'd';
+    tmp[5] = '\0';
+
+    syscall(SYS_copyinstr, tmp);
 
     while (1)
         ;
+
     return 0;
 }

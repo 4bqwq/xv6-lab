@@ -212,7 +212,59 @@ uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
 // 成功返回new_ustack_npage，失败返回-1
 uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr)
 {
-    return 0;
+    // 计算当前栈底地址：TRAPFRAME - old_ustack_npage * PGSIZE
+    uint64 current_stack_bottom = TRAPFRAME - old_ustack_npage * PGSIZE;
+    
+    // 检查故障地址是否在栈扩展范围内
+    // 故障地址应该低于当前栈底，但不能太远（在合理范围内）
+    if (fault_addr < current_stack_bottom && fault_addr >= TRAPFRAME - PGSIZE * 10) {
+        // 计算需要扩展到的栈底（页对齐）
+        uint64 target_stack_bottom = PGROUNDDOWN(fault_addr);
+        
+        // 如果目标地址低于当前栈底，需要扩展栈
+        if (target_stack_bottom < current_stack_bottom) {
+            // 计算需要添加的页数
+            uint64 pages_to_add = (current_stack_bottom - target_stack_bottom) / PGSIZE;
+            
+            // 逐页分配并映射
+            for (uint64 i = 0; i < pages_to_add; i++) {
+                uint64 new_page_va = current_stack_bottom - (i + 1) * PGSIZE;
+                
+                // 检查该虚拟地址是否已经映射，避免重复映射
+                pte_t *pte = vm_getpte(pgtbl, new_page_va, false);
+                if (pte && (*pte & PTE_V)) {
+                    // 如果页面已经存在映射，跳过
+                    continue;
+                }
+                
+                // 分配物理页面
+                uint64 page = (uint64)pmem_alloc(false);
+                if (page == 0) {
+                    // 如果分配失败，需要回滚已分配的页面
+                    for (uint64 j = 0; j < i; j++) {
+                        uint64 va_to_unmap = current_stack_bottom - (j + 1) * PGSIZE;
+                        // 检查页面是否已映射再进行取消映射
+                        pte_t *pte_to_unmap = vm_getpte(pgtbl, va_to_unmap, false);
+                        if (pte_to_unmap && (*pte_to_unmap & PTE_V)) {
+                            vm_unmappages(pgtbl, va_to_unmap, PGSIZE, true);
+                        }
+                    }
+                    return -1;
+                }
+                
+                // 清零页面内容
+                memset((void*)page, 0, PGSIZE);
+                
+                // 映射到用户页表
+                vm_mappages(pgtbl, new_page_va, page, PGSIZE, PTE_R | PTE_W | PTE_U);
+            }
+            
+            // 返回新的栈页面数
+            return old_ustack_npage + pages_to_add;
+        }
+    }
+    
+    return -1; // 失败
 }
 
 /*----------------------part-4: 用户页表管理相关----------------------*/
