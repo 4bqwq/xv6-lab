@@ -145,13 +145,67 @@ void uvm_munmap(uint64 begin, uint32 npages)
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
 uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) 
 {
-    return 0;
+    if (len == 0)
+        return cur_heap_top;
+
+    uint64 new_heap_top = cur_heap_top + len;
+
+    // 边界检查：不能长进 mmap 区域
+    if (new_heap_top > MMAP_BEGIN) {
+        printf("uvm_heap_grow: new_heap_top %p > MMAP_BEGIN %p\n",
+               new_heap_top, MMAP_BEGIN);
+        return (uint64)-1;
+    }
+
+    // 从下一个页对齐地址开始分配新页
+    uint64 va_start = PGROUNDUP(cur_heap_top);
+    for (uint64 va = va_start; va < new_heap_top; va += PGSIZE) {
+        // 防御性：如果已经有映射，跳过（正常情况不会出现）
+        pte_t *pte = vm_getpte(pgtbl, va, false);
+        if (pte && (*pte & PTE_V)) {
+            continue;
+        }
+
+        uint64 page = (uint64)pmem_alloc(false);  // 分配并清零
+        if (page == 0) {
+            panic("uvm_heap_grow: pmem_alloc failed");
+        }
+
+        vm_mappages(pgtbl, va, page, PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+
+    return new_heap_top;
 }
 
 // 用户堆空间减少, 返回新的堆顶地址
 uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
 {
-    return 0;
+    if (len == 0)
+        return cur_heap_top;
+
+    if (len > cur_heap_top) {
+        // 防御性：理论上不应该发生
+        printf("uvm_heap_ungrow: len %d > cur_heap_top %p\n", len, cur_heap_top);
+        return (uint64)-1;
+    }
+
+    uint64 new_heap_top = cur_heap_top - len;
+
+    // 释放 [new_heap_top, cur_heap_top) 范围里被整页覆盖的部分
+    uint64 va_start = PGROUNDUP(new_heap_top);
+    uint64 va_end = PGROUNDDOWN(cur_heap_top - 1);
+
+    if (va_start <= va_end) {
+        for (uint64 va = va_start; va <= va_end; va += PGSIZE) {
+            // 检查页面是否存在映射
+            pte_t *pte = vm_getpte(pgtbl, va, false);
+            if (pte && (*pte & PTE_V)) {
+                vm_unmappages(pgtbl, va, PGSIZE, true);
+            }
+        }
+    }
+
+    return new_heap_top;
 }
 
 // 处理函数栈增长导致的page fault事件
