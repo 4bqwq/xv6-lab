@@ -1,5 +1,5 @@
 #include "mod.h"
-#include "../../user/syscall_num.h"   // 引入 SYS_helloworld 的定义
+#include "../syscall/mod.h"   // 间接包含 ../syscall/type.h
 #include "../mem/type.h"
 
 // in trampoline.S
@@ -67,23 +67,14 @@ void trap_user_handler(void)
     } else {
         // 2. 异常
         switch (trap_id) {
-        case 8: { // Environment call from U-mode (ecall) —— 系统调用
+        case 8: { // Environment call from U-mode (ecall)
 
-            // ★ 关键：按 RISC-V 约定，syscall 号在 a7
-            uint64 sysnum = tf->a7;
-
-            if (sysnum == SYS_helloworld) {
-                // LAB-4 要求的唯一 syscall：打印一行信息
-                printf("proczero: hello world!\n");
-            } else {
-                // LAB-4 只有一个 syscall，其他视为非法
-                printf("\ntrap_user_handler: unknown syscall %ld\n", sysnum);
-                panic("trap_user_handler: unknown syscall");
-            }
-
-            // 系统调用是“异常”里的特殊情况：返回时 PC = PC + 4
-            // sepc 指向 ecall，本次返回要跳过它
+            // 系统调用是"异常"，返回时 PC 需要跳过 ecall 指令
             tf->user_to_kern_epc += 4;
+
+            // 交给 syscall 分发器，根据 a7 决定调用哪个 sys_xxx
+            syscall();
+
             break;
         }
         default:
@@ -141,4 +132,3 @@ void trap_user_return(void)
 
     // 不会再返回到这里
 }
-

@@ -8,6 +8,9 @@ build/
 *.out
 *.log
 
+src/user/initcode.h
+.gdbinit
+
 .vscode/
 scripts/
 
