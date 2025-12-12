@@ -14,6 +14,9 @@ static bool mmap_start_valid(uint64 start)
            (start % PGSIZE == 0 && start >= MMAP_BEGIN && start < MMAP_END);
 }
 
+static int mmap_call_seq = 0;
+static int munmap_call_seq = 0;
+
 uint64 sys_helloworld()
 {
     printf("proczero: hello world!\n");
@@ -221,18 +224,31 @@ uint64 sys_mmap()
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
+    int seq = ++mmap_call_seq;
+    printf("sys_mmap[%d] start %p len %p\n", seq, start, len);
+
     if (!mmap_len_valid(len) || !mmap_start_valid(start))
+    {
+        printf("sys_mmap[%d] reject invalid args\n", seq);
         return (uint64)-1;
+    }
 
     if (start != 0 && len > MMAP_END - start)
+    {
+        printf("sys_mmap[%d] reject overflow range\n", seq);
         return (uint64)-1;
+    }
 
     uint32 npages = (uint32)(len / PGSIZE);
     // uvm_mmap 负责分配物理页并调用 vm_mappages 建立映射
     uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
     if (mapped == 0)
+    {
+        printf("sys_mmap[%d] alloc fail\n", seq);
         return (uint64)-1;
+    }
 
+    printf("sys_mmap[%d] mapped at %p npages %d\n", seq, mapped, npages);
     uvm_show_mmaplist(p->mmap);
     vm_print(p->pgtbl);
     printf("\n");
@@ -255,19 +271,35 @@ uint64 sys_munmap()
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
+    int seq = ++munmap_call_seq;
+    printf("sys_munmap[%d] start %p len %p\n", seq, start, len);
+
     if (!mmap_len_valid(len) || start == 0 || (start % PGSIZE) != 0)
+    {
+        printf("sys_munmap[%d] reject invalid args\n", seq);
         return (uint64)-1;
+    }
 
     if (start < MMAP_BEGIN || start >= MMAP_END)
+    {
+        printf("sys_munmap[%d] reject out of range\n", seq);
         return (uint64)-1;
+    }
     if (len > MMAP_END - start)
+    {
+        printf("sys_munmap[%d] reject overflow range\n", seq);
         return (uint64)-1;
+    }
 
     uint32 npages = (uint32)(len / PGSIZE);
     // uvm_munmap 会在页表里逐段卸载映射并回收节点
     if (!uvm_munmap(start, npages))
+    {
+        printf("sys_munmap[%d] fail in unmap\n", seq);
         return (uint64)-1;
+    }
 
+    printf("sys_munmap[%d] ok npages %d\n", seq, npages);
     uvm_show_mmaplist(p->mmap);
     vm_print(p->pgtbl);
     printf("\n");

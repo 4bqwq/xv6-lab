@@ -7,21 +7,39 @@
 
 int main()
 {
-    syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 3 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 10 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 2 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 12 * PGSIZE, 1 * PGSIZE);
-    syscall(SYS_mmap, MMAP_BEGIN + 7 * PGSIZE, 3 * PGSIZE);
+    // merge gap both sides
     syscall(SYS_mmap, MMAP_BEGIN, 2 * PGSIZE);
-    syscall(SYS_mmap, 0, 10 * PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 2 * PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 2 * PGSIZE, 2 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN, 6 * PGSIZE);
 
-    syscall(SYS_munmap, MMAP_BEGIN + 10 * PGSIZE, 5 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN, 10 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 17 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 15 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 19 * PGSIZE, 2 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 22 * PGSIZE, 1 * PGSIZE);
-    syscall(SYS_munmap, MMAP_BEGIN + 21 * PGSIZE, 1 * PGSIZE);
+    // first fit picks inner hole
+    syscall(SYS_mmap, MMAP_BEGIN, 8 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN + 2 * PGSIZE, 2 * PGSIZE);
+    syscall(SYS_mmap, 0, 2 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN, 8 * PGSIZE);
+
+    // reject overlap and gap unmap
+    syscall(SYS_mmap, MMAP_BEGIN, 2 * PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 2 * PGSIZE);
+    syscall(SYS_mmap, MMAP_BEGIN + 1 * PGSIZE, 2 * PGSIZE);  // overlap expect fail
+    syscall(SYS_mmap, MMAP_END, 1 * PGSIZE);                // boundary expect fail
+    syscall(SYS_munmap, MMAP_BEGIN, 4 * PGSIZE);            // crosses hole expect fail
+    syscall(SYS_mmap, MMAP_BEGIN + 8 * PGSIZE, 1 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN, 2 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN + 4 * PGSIZE, 2 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN + 8 * PGSIZE, 1 * PGSIZE);
+
+    // oversize len reject
+    syscall(SYS_mmap, 0, (MMAP_END - MMAP_BEGIN) + PGSIZE);
+
+    // split and trim one region
+    syscall(SYS_mmap, MMAP_BEGIN + 12 * PGSIZE, 6 * PGSIZE);
+    syscall(SYS_munmap, MMAP_BEGIN + 14 * PGSIZE, 2 * PGSIZE); // split middle
+    syscall(SYS_munmap, MMAP_BEGIN + 16 * PGSIZE, 1 * PGSIZE); // trim head of tail
+    syscall(SYS_munmap, MMAP_BEGIN + 17 * PGSIZE, 1 * PGSIZE); // remove rest of tail
+    syscall(SYS_munmap, MMAP_BEGIN + 12 * PGSIZE, 2 * PGSIZE); // drop left part
+    syscall(SYS_munmap, MMAP_BEGIN + 18 * PGSIZE, 2 * PGSIZE); // final cleanup, should be empty
 
     while (1)
         ;

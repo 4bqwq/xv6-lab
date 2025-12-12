@@ -248,6 +248,28 @@ bool uvm_munmap(uint64 begin, uint32 npages)
     mmap_region_t *prev = NULL;
     mmap_region_t *curr = p->mmap;
 
+    // 先确认请求区间被完整覆盖，避免失败时已经释放部分资源
+    uint64 probe = begin;
+    mmap_region_t *check = curr;
+    while (check && begin >= check->begin + (uint64)check->npages * PGSIZE) {
+        prev = check;
+        check = check->next;
+    }
+    while (probe < end) {
+        if (check == NULL)
+            return false;
+        uint64 region_start = check->begin;
+        uint64 region_end = region_start + (uint64)check->npages * PGSIZE;
+        if (probe < region_start || probe >= region_end)
+            return false;
+        uint64 chunk_end = (end < region_end) ? end : region_end;
+        probe = chunk_end;
+        if (probe < end)
+            check = check->next;
+    }
+
+    // 回到实际操作阶段
+    curr = (prev == NULL) ? p->mmap : prev->next;
     while (curr && begin >= curr->begin + (uint64)curr->npages * PGSIZE) {
         prev = curr;
         curr = curr->next;
