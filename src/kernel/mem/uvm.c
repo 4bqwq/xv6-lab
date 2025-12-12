@@ -440,43 +440,95 @@ uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr
 // ps: 顶级页表level = 3
 static void destroy_pgtbl(pgtbl_t pgtbl, uint32 level)
 {
+    if (pgtbl == NULL || level == 0)
+        return;
 
+    for (int i = 0; i < PGSIZE / (int)sizeof(pte_t); i++)
+    {
+        pte_t pte = pgtbl[i];
+        if ((pte & PTE_V) == 0)
+            continue;
+
+        if (PTE_CHECK(pte) && level > 1)
+        {
+            // 这一项存放的是下一级页表页的物理地址
+            destroy_pgtbl((pgtbl_t)PTE_TO_PA(pte), level - 1);
+        }
+        else if (pte & PTE_U)
+        {
+            // 用户页是从 user_region 申请的物理页, 需要归还
+            pmem_free((uint64)PTE_TO_PA(pte), false);
+        }
+
+        pgtbl[i] = 0;
+    }
+
+    // 当前页表页来自内核物理页池, 处理完子项后整体释放
+    pmem_free((uint64)pgtbl, true);
 }
 
 // 页表销毁
 void uvm_destroy_pgtbl(pgtbl_t pgtbl)
 {
-    vm_unmappages(pgtbl, TRAPFRAME, PGSIZE, true);   // 可以释放，因为trapframe是每个进程独有的
+    pte_t *tf_pte = vm_getpte(pgtbl, TRAPFRAME, false);
+    if (tf_pte && (*tf_pte & PTE_V))
+    {
+        uint64 tf_pa = (uint64)PTE_TO_PA(*tf_pte);
+        vm_unmappages(pgtbl, TRAPFRAME, PGSIZE, false);
+        pmem_free(tf_pa, true);
+    }
     vm_unmappages(pgtbl, TRAMPOLINE, PGSIZE, false); // 不能释放，因为所有进程共用区域
     destroy_pgtbl(pgtbl, 3);
 }
 
 // 连续虚拟空间的复制
 // 在uvm_copy_pgtbl中使用
-// static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end)
-// {
-//     uint64 va, pa, page;
-//     int flags;
-//     pte_t *pte;
+static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end)
+{
+    if (begin >= end)
+        return;
 
-//     for (va = begin; va < end; va += PGSIZE)
-//     {
-//         pte = vm_getpte(old, va, false);
-//         assert(pte != NULL, "uvm_copy_pgtbl: pte == NULL");
-//         assert((*pte) & PTE_V, "uvm_copy_pgtbl: pte not valid");
+    uint64 start = PGROUNDDOWN(begin);
+    uint64 stop = PGROUNDUP(end);
 
-//         pa = (uint64)PTE_TO_PA(*pte);
-//         flags = (int)PTE_FLAGS(*pte);
+    for (uint64 va = start; va < stop; va += PGSIZE)
+    {
+        pte_t *pte = vm_getpte(old, va, false);
+        if (pte == NULL || (*pte & PTE_V) == 0 || PTE_CHECK(*pte))
+            continue;
 
-//         page = (uint64)pmem_alloc(false);
-//         memmove((char *)page, (const char *)pa, PGSIZE);
-//         vm_mappages(new, va, page, PGSIZE, flags);
-//     }
-// }
+        if (((*pte) & PTE_U) == 0)
+            continue;
+
+        uint64 pa = (uint64)PTE_TO_PA(*pte);
+        int flags = (int)PTE_FLAGS(*pte);
+
+        uint64 page = (uint64)pmem_alloc(false);
+        memmove((void *)page, (const void *)pa, PGSIZE);
+        vm_mappages(new, va, page, PGSIZE, flags);
+    }
+}
 
 // 拷贝页表 (拷贝并不包括 trapframe 和 trampoline)
 // 拷贝的页表管理的物理页是原来页表的复制品
 void uvm_copy_pgtbl(pgtbl_t old, pgtbl_t new, uint64 heap_top, uint64 ustack_npage, mmap_region_t *mmap)
 {
+    uint64 heap_end = heap_top;
+    if (heap_end < PGSIZE)
+        heap_end = PGSIZE;
+    heap_end = PGROUNDUP(heap_end);
+    copy_range(old, new, PGSIZE, heap_end);
 
+    if (ustack_npage > 0)
+    {
+        uint64 stack_begin = TRAPFRAME - ustack_npage * PGSIZE;
+        copy_range(old, new, stack_begin, TRAPFRAME);
+    }
+
+    for (mmap_region_t *node = mmap; node != NULL; node = node->next)
+    {
+        uint64 begin = node->begin;
+        uint64 end = begin + (uint64)node->npages * PGSIZE;
+        copy_range(old, new, begin, end);
+    }
 }

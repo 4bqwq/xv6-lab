@@ -17,6 +17,187 @@ extern void trap_user_return();
 // in mem/kvm.c
 extern void kvm_clone_kernel_map(pgtbl_t dst);
 
+static bool verify_page_equal(void *pa_a, void *pa_b)
+{
+    uint8 *lhs = (uint8 *)pa_a;
+    uint8 *rhs = (uint8 *)pa_b;
+    for (uint32 i = 0; i < PGSIZE; i++)
+    {
+        if (lhs[i] != rhs[i])
+            return false;
+    }
+    return true;
+}
+
+static bool verify_range_equal(pgtbl_t a, pgtbl_t b, uint64 begin, uint64 end)
+{
+    if (begin >= end)
+        return true;
+
+    uint64 start = PGROUNDDOWN(begin);
+    uint64 stop = PGROUNDUP(end);
+
+    for (uint64 va = start; va < stop; va += PGSIZE)
+    {
+        pte_t *pte_a = vm_getpte(a, va, false);
+        pte_t *pte_b = vm_getpte(b, va, false);
+
+        bool valid_a = pte_a && (*pte_a & PTE_V) && !PTE_CHECK(*pte_a) && ((*pte_a) & PTE_U);
+        bool valid_b = pte_b && (*pte_b & PTE_V) && !PTE_CHECK(*pte_b) && ((*pte_b) & PTE_U);
+
+        if (valid_a != valid_b)
+            return false;
+
+        if (valid_a && !verify_page_equal((void *)PTE_TO_PA(*pte_a), (void *)PTE_TO_PA(*pte_b)))
+            return false;
+    }
+
+    return true;
+}
+
+static void run_pgtbl_checks(proc_t *p)
+{
+    printf("[pgtbl-check] begin\n");
+
+    uint64 old_heap_top = p->heap_top;
+    uint64 heap_begin = old_heap_top;
+    uint64 heap_end = old_heap_top;
+    uint64 stack_pages = p->ustack_npage;
+    uint64 stack_base = TRAPFRAME - stack_pages * PGSIZE;
+    uint64 heap_grow_len = 2 * PGSIZE;
+    uint32 mmap_pages = 2;
+
+    bool heap_extended = false;
+    bool mmap_ready = false;
+
+    uint64 mmap_addr = 0;
+    uint8 *pattern = NULL;
+    void **stack_backup = NULL;
+    uint64 stack_saved = 0;
+    pgtbl_t copied = NULL;
+
+    pattern = (uint8 *)pmem_alloc(true);
+    if (pattern == NULL)
+    {
+        printf("[pgtbl-check] pattern alloc fail\n");
+        goto cleanup;
+    }
+
+    uint64 new_top = uvm_heap_grow(p->pgtbl, old_heap_top, (uint32)heap_grow_len);
+    if (new_top == (uint64)-1)
+    {
+        printf("[pgtbl-check] heap grow fail\n");
+        goto cleanup;
+    }
+    heap_extended = true;
+    p->heap_top = new_top;
+    heap_end = new_top;
+
+    for (uint64 off = heap_begin; off < heap_end; off += PGSIZE)
+    {
+        uint8 fill = (uint8)(0x11 + ((off - heap_begin) / PGSIZE));
+        memset(pattern, fill, PGSIZE);
+        uvm_copyout(p->pgtbl, off, (uint64)pattern, PGSIZE);
+    }
+
+    mmap_addr = uvm_mmap(0, mmap_pages, PTE_R | PTE_W);
+    if (mmap_addr == 0)
+    {
+        printf("[pgtbl-check] mmap fail\n");
+        goto cleanup;
+    }
+    mmap_ready = true;
+
+    for (uint32 i = 0; i < mmap_pages; i++)
+    {
+        uint8 fill = (uint8)(0x31 + i);
+        memset(pattern, fill, PGSIZE);
+        uvm_copyout(p->pgtbl, mmap_addr + (uint64)i * PGSIZE, (uint64)pattern, PGSIZE);
+    }
+
+    stack_backup = (void **)pmem_alloc(true);
+    if (stack_backup == NULL)
+    {
+        printf("[pgtbl-check] stack backup alloc fail\n");
+        goto cleanup;
+    }
+    memset(stack_backup, 0, PGSIZE);
+
+    for (uint64 i = 0; i < stack_pages; i++)
+    {
+        void *page = pmem_alloc(true);
+        stack_backup[i] = page;
+        stack_saved++;
+        uvm_copyin(p->pgtbl, (uint64)page, stack_base + i * PGSIZE, PGSIZE);
+        uint8 fill = (uint8)(0x51 + i);
+        memset(pattern, fill, PGSIZE);
+        uvm_copyout(p->pgtbl, stack_base + i * PGSIZE, (uint64)pattern, PGSIZE);
+    }
+
+    trapframe_t *tmp_tf = (trapframe_t *)pmem_alloc(true);
+    copied = proc_pgtbl_init((uint64)tmp_tf);
+    uvm_copy_pgtbl(p->pgtbl, copied, p->heap_top, p->ustack_npage, p->mmap);
+
+    bool heap_ok = verify_range_equal(p->pgtbl, copied, heap_begin, heap_end);
+    bool stack_ok = verify_range_equal(p->pgtbl, copied, stack_base, TRAPFRAME);
+    bool mmap_ok = verify_range_equal(p->pgtbl, copied, mmap_addr, mmap_addr + (uint64)mmap_pages * PGSIZE);
+
+    uint8 expect_byte = 0x11;
+    uint8 new_byte = 0x7d;
+    uvm_copyout(p->pgtbl, heap_begin, (uint64)&new_byte, 1);
+    uint8 copied_byte = 0;
+    uvm_copyin(copied, (uint64)&copied_byte, heap_begin, 1);
+    bool isolate_ok = (copied_byte == expect_byte);
+
+    printf("[pgtbl-check] heap copy %s\n", heap_ok ? "ok" : "fail");
+    printf("[pgtbl-check] stack copy %s\n", stack_ok ? "ok" : "fail");
+    printf("[pgtbl-check] mmap copy %s\n", mmap_ok ? "ok" : "fail");
+    printf("[pgtbl-check] copy isolation %s\n", isolate_ok ? "ok" : "fail");
+
+    uvm_destroy_pgtbl(copied);
+    copied = NULL;
+
+    trapframe_t *tmp2 = (trapframe_t *)pmem_alloc(true);
+    pgtbl_t empty = proc_pgtbl_init((uint64)tmp2);
+    uvm_destroy_pgtbl(empty);
+    printf("[pgtbl-check] destroy empty ok\n");
+
+cleanup:
+    if (copied)
+        uvm_destroy_pgtbl(copied);
+
+    if (stack_backup)
+    {
+        for (uint64 i = 0; i < stack_saved; i++)
+        {
+            uvm_copyout(p->pgtbl, stack_base + i * PGSIZE, (uint64)stack_backup[i], PGSIZE);
+            pmem_free((uint64)stack_backup[i], true);
+        }
+        pmem_free((uint64)stack_backup, true);
+    }
+
+    if (mmap_ready)
+    {
+        if (!uvm_munmap(mmap_addr, mmap_pages))
+            printf("[pgtbl-check] munmap rollback fail\n");
+    }
+
+    if (heap_extended)
+    {
+        uint64 shrink = p->heap_top - old_heap_top;
+        uint64 ret = uvm_heap_ungrow(p->pgtbl, p->heap_top, (uint32)shrink);
+        if (ret != (uint64)-1)
+            p->heap_top = ret;
+        else
+            p->heap_top = old_heap_top;
+    }
+
+    if (pattern)
+        pmem_free((uint64)pattern, true);
+
+    printf("[pgtbl-check] end\n");
+}
+
 // 第一个用户进程
 static proc_t proczero;
 
@@ -128,6 +309,8 @@ void proc_make_first()
     // ---------- 10. 把当前 CPU 绑定到 proczero 并切换过去 ----------
     cpu_t *c = mycpu();
     c->proc = p;
+
+    run_pgtbl_checks(p);
 }
 
 // 启动第一个进程并切换上下文
