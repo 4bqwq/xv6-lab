@@ -140,7 +140,10 @@ void vm_print(pgtbl_t pgtbl)
     pte_t pte;
 
     printf("level-2 pgtbl: pa = %p\n", pgtbl_2);
+    int hi_slot = VA_TO_VPN(TRAPFRAME, 2);
     for (int i = 0; i < PGSIZE / sizeof(pte_t); i++) {
+        if (i != 0 && i != hi_slot)
+            continue;
         pte = pgtbl_2[i];
         if (!(pte & PTE_V)) continue;
         assert(PTE_CHECK(pte), "vm_print: pte check fail (1)");
@@ -154,23 +157,16 @@ void vm_print(pgtbl_t pgtbl)
             pgtbl_0 = (pgtbl_t)PTE_TO_PA(pte);
             printf(".. .. level-0 pgtbl %d: pa = %p\n", j, pgtbl_0);
 
-            //int shown = 0, total = 0;
             for (int k = 0; k < PGSIZE / sizeof(pte_t); k++) {
                 pte = pgtbl_0[k];
                 if (!(pte & PTE_V)) continue;
-            //    total++;
-            //    if (shown < MAX_L0_SHOW) {
+                int flags = (int)PTE_FLAGS(pte);
+                if ((flags & PTE_U) == 0 && i != hi_slot)
+                    continue;
                 assert(!PTE_CHECK(pte), "vm_print: pte check fail (3)");
                 printf(".. .. .. physical page %d: pa = %p flags = %d\n",
-                       k, (void*)PTE_TO_PA(pte), (int)PTE_FLAGS(pte));
-            //        shown++;
-            //    }
+                       k, (void*)PTE_TO_PA(pte), flags);
             }
-            //if (total > shown) {
-            //    printf(".. .. .. ... (%d more)\n", total - shown);
-            //}
         }
     }
 }
-
-

@@ -1,5 +1,19 @@
 #include "mod.h"
 
+// 检查页对齐并确保长度落在 mmap 设计范围
+static bool mmap_len_valid(uint64 len)
+{
+    return (len != 0) && (len % PGSIZE == 0) &&
+           (len <= (MMAP_END - MMAP_BEGIN));
+}
+
+// mmap 起点要么交给内核分配要么满足页对齐和边界约束
+static bool mmap_start_valid(uint64 start)
+{
+    return (start == 0) ||
+           (start % PGSIZE == 0 && start >= MMAP_BEGIN && start < MMAP_END);
+}
+
 uint64 sys_helloworld()
 {
     printf("proczero: hello world!\n");
@@ -200,7 +214,30 @@ uint64 sys_brk()
 */
 uint64 sys_mmap()
 {
-    return 0;
+    proc_t *p = myproc();
+
+    uint64 start;
+    uint64 len;
+    arg_uint64(0, &start);
+    arg_uint64(1, &len);
+
+    if (!mmap_len_valid(len) || !mmap_start_valid(start))
+        return (uint64)-1;
+
+    if (start != 0 && len > MMAP_END - start)
+        return (uint64)-1;
+
+    uint32 npages = (uint32)(len / PGSIZE);
+    // uvm_mmap 负责分配物理页并调用 vm_mappages 建立映射
+    uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
+    if (mapped == 0)
+        return (uint64)-1;
+
+    uvm_show_mmaplist(p->mmap);
+    vm_print(p->pgtbl);
+    printf("\n");
+
+    return mapped;
 }
 
 /*
@@ -211,5 +248,29 @@ uint64 sys_mmap()
 */
 uint64 sys_munmap()
 {
+    proc_t *p = myproc();
+
+    uint64 start;
+    uint64 len;
+    arg_uint64(0, &start);
+    arg_uint64(1, &len);
+
+    if (!mmap_len_valid(len) || start == 0 || (start % PGSIZE) != 0)
+        return (uint64)-1;
+
+    if (start < MMAP_BEGIN || start >= MMAP_END)
+        return (uint64)-1;
+    if (len > MMAP_END - start)
+        return (uint64)-1;
+
+    uint32 npages = (uint32)(len / PGSIZE);
+    // uvm_munmap 会在页表里逐段卸载映射并回收节点
+    if (!uvm_munmap(start, npages))
+        return (uint64)-1;
+
+    uvm_show_mmaplist(p->mmap);
+    vm_print(p->pgtbl);
+    printf("\n");
+
     return 0;
 }
