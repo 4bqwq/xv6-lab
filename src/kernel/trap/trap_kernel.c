@@ -1,4 +1,5 @@
 #include "mod.h"
+#include "../proc/mod.h"
 
 // 中断信息
 char *interrupt_info[16] = {
@@ -87,6 +88,11 @@ void trap_kernel_handler()
         // 1-中断处理
         switch (trap_id) // 中断产生原因分类
         {
+        case 5: // S-mode timer interrupt
+            timer_interrupt_handler();
+            if (myproc())
+                proc_yield();
+            break;
 
         default: // 例外处理
             printf("\nunexpected interrupt: %s\n", interrupt_info[trap_id]);

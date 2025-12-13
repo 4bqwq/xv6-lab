@@ -2,6 +2,7 @@
 #include "../syscall/mod.h"   // 间接包含 ../syscall/type.h
 #include "../mem/type.h"
 #include "../mem/mod.h"
+#include "../proc/mod.h"
 
 // in trampoline.S
 extern char trampoline[];  // 内核和用户切换的代码
@@ -56,6 +57,7 @@ void trap_user_handler(void)
         switch (trap_id) {
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
+            proc_yield(); // 抢占：用户态时钟中断后交还CPU
             break;
         case 9: // S-mode external interrupt
             external_interrupt_handler();

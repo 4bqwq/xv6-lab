@@ -511,6 +511,7 @@ void proc_yield()
     spinlock_acquire(&p->lk);
     p->state = RUNNABLE;
     proc_sched();
+    // 返回后进程再次被选中并持有锁
     spinlock_release(&p->lk);
 }
 

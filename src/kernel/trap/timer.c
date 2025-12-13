@@ -1,5 +1,6 @@
 #include "../arch/mod.h"
 #include "../lib/mod.h"
+#include "../proc/mod.h"
 #include "type.h"
 #include "mod.h"
 
@@ -65,5 +66,9 @@ uint64 timer_get_ticks()
 // 让进程睡眠ntick个时钟周期
 void timer_wait(uint64 ntick)
 {
-
+    uint64 begin = timer_get_ticks();
+    while (timer_get_ticks() - begin < ntick) {
+        // 简易睡眠：依赖时钟中断抢占，通过 yield 让出 CPU
+        proc_yield();
+    }
 }
