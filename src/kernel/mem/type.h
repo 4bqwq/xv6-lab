@@ -132,6 +132,9 @@ typedef pte_t* pgtbl_t;
 // trapframe 所在页: 紧挨着 TRAMPOLINE 之下的一页
 #define TRAPFRAME  (TRAMPOLINE - PGSIZE)
 
+// 每个进程对应的内核栈虚拟地址，栈之间留出一页空洞做隔离
+#define KSTACK(procid) (TRAPFRAME - ((procid) + 1) * 2 * PGSIZE)
+
 /* mmap_region 描述了一个 mmap区域 */
 typedef struct mmap_region
 {

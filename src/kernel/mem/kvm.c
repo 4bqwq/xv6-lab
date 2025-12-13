@@ -1,4 +1,5 @@
 #include "mod.h"
+#include "../proc/type.h"
 
 //================= 链接脚本符号（按你的 kernel.ld 名字有差异就改） =================
 extern char KERNEL_START[];   // 内核镜像起始
@@ -115,6 +116,15 @@ void kvm_init()
     assert(kernel_pgtbl != NULL , "kvm_init: no mem for root pgtbl");
     memset(kernel_pgtbl, 0, PGSIZE);
     map_kernel_and_io(kernel_pgtbl);
+
+    // 预先为每个进程槽位准备一页内核栈，切换时使用固定虚拟地址
+    for (int i = 0; i < N_PROC; i++) {
+        uint64 va = KSTACK(i);
+        uint64 pa = (uint64)pmem_alloc(true);
+        assert(pa != 0, "kvm_init: no mem for kstack");
+        memset((void *)pa, 0, PGSIZE);
+        vm_mappages(kernel_pgtbl, va, pa, PGSIZE, PTE_R | PTE_W);
+    }
 }
 
 void kvm_inithart()

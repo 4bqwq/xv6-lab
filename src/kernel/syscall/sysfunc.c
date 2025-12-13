@@ -199,11 +199,23 @@ uint64 sys_munmap()
 
 uint64 sys_print_str()
 {
+    proc_t *p = myproc();
+    uint64 uaddr = 0;
+    arg_uint64(0, &uaddr);
+
+    char buf[STR_MAXLEN + 1];
+    memset(buf, 0, sizeof(buf));
+    uvm_copyin_str(p->pgtbl, (uint64)buf, uaddr, STR_MAXLEN);
+
+    printf("%s", buf);
     return 0;
 }
 
 uint64 sys_print_int()
 {
+    uint32 num = 0;
+    arg_uint32(0, &num);
+    printf("num = %d\n", (int)num);
     return 0;
 }
 
@@ -229,5 +241,6 @@ uint64 sys_sleep()
 
 uint64 sys_getpid()
 {
-    return 0;
+    proc_t *p = myproc();
+    return (uint64)p->pid;
 }

@@ -40,14 +40,23 @@ static int __attribute__((unused)) alloc_pid()
 /* 释放进程锁 + trap_user_return */
 static void __attribute__((unused)) proc_return()
 {
-
+    proc_t *p = myproc();
+    assert(p != NULL, "proc_return: no current proc");
+    spinlock_release(&p->lk);
+    trap_user_return();
 }
 
 /* 进程模块初始化 */
 void proc_init()
 {
     memset(proc_list, 0, sizeof(proc_list));
-    proczero = &proc_list[0];
+    for (int i = 0; i < N_PROC; i++) {
+        proc_t *p = &proc_list[i];
+        spinlock_init(&p->lk, "proc");
+        p->state = UNUSED;
+        p->kstack = KSTACK(i);
+    }
+    proczero = NULL;
     global_pid = 1;
     spinlock_init(&pid_lk, "pid");
 }
@@ -58,6 +67,56 @@ void proc_init()
 */
 proc_t *proc_alloc()
 {
+    for (int i = 0; i < N_PROC; i++) {
+        proc_t *p = &proc_list[i];
+
+        spinlock_acquire(&p->lk);
+        if (p->state != UNUSED) {
+            spinlock_release(&p->lk);
+            continue;
+        }
+
+        p->pid = alloc_pid();
+        p->parent = NULL;
+        p->exit_code = 0;
+        p->sleep_space = NULL;
+        p->heap_top = 0;
+        p->ustack_npage = 0;
+        p->mmap = NULL;
+        memset(p->name, 0, sizeof(p->name));
+
+        // 内核栈采用固定虚拟地址，缺页时补充物理页并清空栈空间
+        pgtbl_t kroot = kvm_get_root();
+        pte_t *pte = vm_getpte(kroot, p->kstack, false);
+        if (pte == NULL || (*pte & PTE_V) == 0 || PTE_CHECK(*pte)) {
+            uint64 pa = (uint64)pmem_alloc(true);
+            assert(pa != 0, "proc_alloc: no mem for kstack");
+            memset((void *)pa, 0, PGSIZE);
+            vm_mappages(kroot, p->kstack, pa, PGSIZE, PTE_R | PTE_W);
+        }
+        memset((void *)p->kstack, 0, PGSIZE);
+
+        // trapframe + 用户页表初始化
+        p->tf = (trapframe_t *)pmem_alloc(true);
+        assert(p->tf != NULL, "proc_alloc: no mem for trapframe");
+        memset(p->tf, 0, PGSIZE);
+        p->pgtbl = proc_pgtbl_init((uint64)p->tf);
+
+        // 将同一物理页的内核栈映射到用户页表，U 位置零，便于陷阱入口在切换 satp 前切到内核栈
+        pte = vm_getpte(kroot, p->kstack, false);
+        assert(pte && (*pte & PTE_V) && !PTE_CHECK(*pte), "proc_alloc: kstack pte missing");
+        uint64 kpa = (uint64)PTE_TO_PA(*pte);
+        vm_mappages(p->pgtbl, p->kstack, kpa, PGSIZE, PTE_R | PTE_W);
+
+        // 进程上下文把 sp 放到内核栈顶，ra 跳到 proc_return
+        memset(&p->ctx, 0, sizeof(p->ctx));
+        p->ctx.sp = p->kstack + PGSIZE;
+        p->ctx.ra = (uint64)proc_return;
+
+        p->state = RUNNABLE;
+        return p;
+    }
+
     return NULL;
 }
 
@@ -67,7 +126,52 @@ proc_t *proc_alloc()
 */
 void proc_free(proc_t *p)
 {
+    assert(spinlock_holding(&p->lk), "proc_free: lock not held");
 
+    // 回收用户页表与其中的用户物理页、trapframe
+    bool tf_recycled = false;
+    if (p->pgtbl) {
+        // 先去掉用户页表中的内核栈映射，物理页稍后统一回收
+        pte_t *upte = vm_getpte(p->pgtbl, p->kstack, false);
+        if (upte && (*upte & PTE_V) && !PTE_CHECK(*upte)) {
+            vm_unmappages(p->pgtbl, p->kstack, PGSIZE, false);
+        }
+        uvm_destroy_pgtbl(p->pgtbl);
+        p->pgtbl = NULL;
+        tf_recycled = true;
+    }
+    if (p->tf && !tf_recycled) {
+        pmem_free((uint64)p->tf, true);
+    }
+    p->tf = NULL;
+
+    // 清理 mmap 元数据，用户页已在页表销毁时释放
+    while (p->mmap) {
+        mmap_region_t *node = p->mmap;
+        p->mmap = node->next;
+        mmap_region_free(node);
+    }
+
+    // 释放内核栈物理页并解除映射，避免复用时残留旧栈内容
+    pgtbl_t kroot = kvm_get_root();
+    if (p->kstack) {
+        pte_t *kpte = vm_getpte(kroot, p->kstack, false);
+        if (kpte && (*kpte & PTE_V) && !PTE_CHECK(*kpte)) {
+            uint64 pa = (uint64)PTE_TO_PA(*kpte);
+            vm_unmappages(kroot, p->kstack, PGSIZE, false);
+            pmem_free(pa, true);
+        }
+    }
+
+    p->pid = 0;
+    p->parent = NULL;
+    p->exit_code = 0;
+    p->sleep_space = NULL;
+    p->heap_top = 0;
+    p->ustack_npage = 0;
+    memset(p->name, 0, sizeof(p->name));
+    memset(&p->ctx, 0, sizeof(p->ctx));
+    p->state = UNUSED;
 }
 
 static bool __attribute__((unused)) verify_page_equal(void *pa_a, void *pa_b)
@@ -286,29 +390,11 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe)
 */
 void proc_make_first()
 {
-    proc_t *p = proczero;
-    memset(p, 0, sizeof(*p));
+    proc_t *p = proc_alloc();
+    assert(p != NULL, "proc_make_first: no free proc");
+    proczero = p;
 
-    p->pid = 1; // 第一个用户进程，给个固定 pid 即可
-
-    // ---------- 1. 为内核栈分配一页 ----------
-    // 内核栈放在“内核可分配区域”里；由于 kernel_pgtbl 对该区域做了 identity 映射，
-    // 所以物理地址就是内核虚拟地址。
-    uint64 kstack_pa = (uint64)pmem_alloc(true);
-    assert(kstack_pa != 0, "proc_make_first: no mem for kernel stack");
-    memset((void *)kstack_pa, 0, PGSIZE);
-    p->kstack = kstack_pa;
-
-    // ---------- 2. 为 trapframe 分配一页 ----------
-    trapframe_t *tf = (trapframe_t *)pmem_alloc(true);
-    assert(tf != NULL, "proc_make_first: no mem for trapframe");
-    memset(tf, 0, PGSIZE);
-    p->tf = tf;
-
-    // ---------- 3. 创建并初始化用户页表 ----------
-    p->pgtbl = proc_pgtbl_init((uint64)tf);
-
-    // ---------- 4. 分配并映射用户代码+数据页 ----------
+    // ---------- 1. 分配并映射用户代码+数据页 ----------
     // 空出最低的 4KB (0 ~ PGSIZE-1)，因此代码从 PGSIZE 开始
     const uint64 ucode_va = PGSIZE;
 
@@ -346,20 +432,16 @@ void proc_make_first()
     
     //p->tf->a0 = TRAPFRAME;
 
-    // ---------- 8. 初始化内核态上下文 ----------
-    // 从 CPU 自身上下文切换到该进程时：
-    //   - 使用该进程的内核栈
-    //   - 返回地址为 trap_user_return()，从而进入用户态
-    p->ctx.sp = p->kstack + PGSIZE;
-    p->ctx.ra = (uint64)trap_user_return;
-
-    // ---------- 9. 初始化 mmap 链表 ----------
+    // ---------- 8. 初始化 mmap 链表 ----------
     p->mmap = 0;  // 初始时 mmap 链表为空
 
-    // ---------- 10. 把当前 CPU 绑定到 proczero 并切换过去 ----------
+    // ---------- 9. 准备调度 ----------
+    p->state = RUNNABLE;
+    spinlock_release(&p->lk);
+
+    // ---------- 10. 把当前 CPU 绑定到 proczero ----------
     cpu_t *c = mycpu();
     c->proc = p;
-
 }
 
 // 启动第一个进程并切换上下文
@@ -455,7 +537,16 @@ void proc_wakeup(void *sleep_space)
 */
 void proc_sched()
 {
+    cpu_t *c = mycpu();
+    proc_t *p = c->proc;
+    assert(p != NULL, "proc_sched: no current proc");
+    assert(spinlock_holding(&p->lk), "proc_sched: need lock");
+    assert(intr_get() == 0, "proc_sched: interrupts must be off");
 
+    p->state = RUNNABLE;
+    c->proc = NULL;
+    swtch(&p->ctx, &c->ctx);
+    c->proc = p;
 }
 
 /* 
@@ -464,6 +555,21 @@ void proc_sched()
 */
 void proc_scheduler()
 {
+    cpu_t *c = mycpu();
+    c->proc = NULL;
+
     while (1) {
+        intr_on();
+        for (int i = 0; i < N_PROC; i++) {
+            proc_t *p = &proc_list[i];
+            spinlock_acquire(&p->lk);
+            if (p->state == RUNNABLE) {
+                p->state = RUNNING;
+                c->proc = p;
+                swtch(&c->ctx, &p->ctx);
+                c->proc = NULL;
+            }
+            spinlock_release(&p->lk);
+        }
     }
 }
