@@ -14,6 +14,7 @@ void   timer_init(void);
 void   timer_create(void);
 void   timer_update(void);
 uint64 timer_get_ticks(void);
+void   timer_wait(uint64 ntick);
 
 // trap_kernel.c
 void trap_kernel_init(void);

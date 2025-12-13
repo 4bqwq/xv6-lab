@@ -25,7 +25,6 @@ int main()
         trap_kernel_inithart();
         __sync_synchronize();
         started = 1;
-        proc_scheduler();
     } else {
 
         while (started == 0)
@@ -35,6 +34,9 @@ int main()
         kvm_inithart();
         trap_kernel_inithart();
     }
-    while (1)
-        ;
+
+    proc_scheduler();
+
+    panic("main: never back!");
+    return 0;
 }

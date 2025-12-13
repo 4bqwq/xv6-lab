@@ -462,7 +462,43 @@ void proc_start_first()
 */
 int proc_fork()
 {
-    return -1;
+    proc_t *parent = myproc();
+
+    proc_t *child = proc_alloc();
+    if (child == NULL)
+        return -1;
+
+    // 复制父进程 trapframe，子进程返回值置0
+    memmove(child->tf, parent->tf, sizeof(trapframe_t));
+    child->tf->a0 = 0;
+
+    // 复制进程元数据
+    child->parent = parent;
+    child->heap_top = parent->heap_top;
+    child->ustack_npage = parent->ustack_npage;
+    memmove(child->name, parent->name, sizeof(child->name));
+
+    // 复制 mmap 元数据
+    child->mmap = NULL;
+    mmap_region_t **tail = &child->mmap;
+    for (mmap_region_t *n = parent->mmap; n != NULL; n = n->next) {
+        mmap_region_t *cpy = mmap_region_alloc();
+        cpy->begin = n->begin;
+        cpy->npages = n->npages;
+        cpy->next = NULL;
+        *tail = cpy;
+        tail = &cpy->next;
+    }
+
+    // 复制用户页表和其中的用户物理页
+    uvm_copy_pgtbl(parent->pgtbl, child->pgtbl,
+                   parent->heap_top, parent->ustack_npage, child->mmap);
+
+    // 子进程就绪
+    child->state = RUNNABLE;
+    printf("proc %d is running...\n", child->pid);
+    spinlock_release(&child->lk);
+    return child->pid;
 }
 
 /*
@@ -471,7 +507,11 @@ int proc_fork()
 */
 void proc_yield()
 {
-
+    proc_t *p = myproc();
+    spinlock_acquire(&p->lk);
+    p->state = RUNNABLE;
+    proc_sched();
+    spinlock_release(&p->lk);
 }
 
 /*
@@ -562,10 +602,13 @@ void proc_scheduler()
         intr_on();
         for (int i = 0; i < N_PROC; i++) {
             proc_t *p = &proc_list[i];
+            if (p->lk.locked && p->lk.cpuid == mycpuid())
+                spinlock_release(&p->lk);
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
                 p->state = RUNNING;
                 c->proc = p;
+                printf("proc %d is running...\n", p->pid);
                 swtch(&c->ctx, &p->ctx);
                 c->proc = NULL;
             }

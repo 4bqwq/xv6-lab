@@ -221,21 +221,31 @@ uint64 sys_print_int()
 
 uint64 sys_fork()
 {
-    return 0;
+    int pid = proc_fork();
+    proc_yield();
+    return (uint64)pid;
 }
 
 uint64 sys_wait()
 {
-    return 0;
+    uint64 addr = 0;
+    arg_uint64(0, &addr);
+    return (uint64)proc_wait(addr);
 }
 
 uint64 sys_exit()
 {
+    int code = 0;
+    arg_uint32(0, (uint32 *)&code);
+    proc_exit(code);
     return 0;
 }
 
 uint64 sys_sleep()
 {
+    uint64 ntick = 0;
+    arg_uint64(0, &ntick);
+    timer_wait(ntick);
     return 0;
 }
 
