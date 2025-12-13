@@ -14,9 +14,6 @@ static bool mmap_start_valid(uint64 start)
            (start % PGSIZE == 0 && start >= MMAP_BEGIN && start < MMAP_END);
 }
 
-static int mmap_call_seq = 0;
-static int munmap_call_seq = 0;
-
 uint64 sys_helloworld()
 {
     printf("proczero: hello world!\n");
@@ -97,63 +94,6 @@ uint64 sys_copyinstr()
     return 0;
 }
 
-// 只关注实验里涉及的两个顶级页表槽位: 低地址(0) + 高地址(TRAPFRAME所在槽)
-static void dump_level0_slot(pgtbl_t l1, int idx)
-{
-    pte_t entry = l1[idx];
-    if (!(entry & PTE_V))
-        return;
-
-    assert(PTE_CHECK(entry), "show_heap_event: unexpected leaf at level-0");
-    pgtbl_t l0 = (pgtbl_t)PTE_TO_PA(entry);
-    printf(".. .. level-0 pg tbl %d: pa = %p\n", idx, l0);
-
-    for (int k = 0; k < PGSIZE / sizeof(pte_t); k++) {
-        pte_t leaf = l0[k];
-        if (!(leaf & PTE_V))
-            continue;
-
-        assert(!PTE_CHECK(leaf), "show_heap_event: leaf missing flags");
-        printf(".. .. .. physical page %d: pa = %p flags = %d\n",
-               k, (void *)PTE_TO_PA(leaf), (int)PTE_FLAGS(leaf));
-    }
-}
-
-static void dump_level1_slot(pgtbl_t l2, int idx)
-{
-    pte_t pte = l2[idx];
-    if (!(pte & PTE_V))
-        return;
-
-    assert(PTE_CHECK(pte), "show_heap_event: unexpected leaf at level-1");
-    pgtbl_t l1 = (pgtbl_t)PTE_TO_PA(pte);
-    printf(".. level-1 pg tbl %d: pa = %p\n", idx, l1);
-
-    int targets[2];
-    int n = 0;
-    if (idx == 0)
-        targets[n++] = 0;
-    else if (idx == VA_TO_VPN(TRAPFRAME, 2))
-        targets[n++] = VA_TO_VPN(TRAPFRAME, 1);
-
-    for (int i = 0; i < n; i++)
-        dump_level0_slot(l1, targets[i]);
-}
-
-// brk 调试输出: 展示返回值 + 页表关键结构, 便于对照测试截图
-static void show_heap_event(const char *tag, proc_t *p, uint64 ret_top)
-{
-    printf("%s event: ret_heap_top = %p\n", tag, ret_top);
-
-    pgtbl_t l2 = p->pgtbl;
-    printf("level-2 pg tbl: pa = %p\n", l2);
-
-    dump_level1_slot(l2, 0);
-    dump_level1_slot(l2, VA_TO_VPN(TRAPFRAME, 2));
-
-    printf("\n");
-}
-
 /*
     用户堆空间伸缩
     uint64 new_heap_top (如果是0, 代表查询当前堆顶位置)
@@ -168,9 +108,7 @@ uint64 sys_brk()
 
     // 查询当前堆顶
     if (new_heap_top == 0) {
-        uint64 ret = p->heap_top;
-        show_heap_event("look", p, ret);
-        return ret;
+        return p->heap_top;
     }
 
     uint64 old_heap_top = p->heap_top;
@@ -181,29 +119,22 @@ uint64 sys_brk()
         uint32 len = (uint32)(new_heap_top - old_heap_top);
 
         uint64 grown_top = uvm_heap_grow(p->pgtbl, old_heap_top, len);
-        if (grown_top == (uint64)-1) {
-            printf("sys_brk: grow failed\n");
+        if (grown_top == (uint64)-1)
             return (uint64)-1;
-        }
         p->heap_top = grown_top;
         result = grown_top;
-        show_heap_event("grow", p, result);
     } else if (new_heap_top < old_heap_top) {
         // 收缩堆
         uint32 len = (uint32)(old_heap_top - new_heap_top);
 
         uint64 shrunk_top = uvm_heap_ungrow(p->pgtbl, old_heap_top, len);
-        if (shrunk_top == (uint64)-1) {
-            printf("sys_brk: shrink failed\n");
+        if (shrunk_top == (uint64)-1)
             return (uint64)-1;
-        }
         p->heap_top = shrunk_top;
         result = shrunk_top;
-        show_heap_event("ungrow", p, result);
     } else {
         // new_heap_top == old_heap_top
         result = old_heap_top;
-        show_heap_event("equal", p, result);
     }
 
     return result;
@@ -217,41 +148,22 @@ uint64 sys_brk()
 */
 uint64 sys_mmap()
 {
-    proc_t *p = myproc();
-
     uint64 start;
     uint64 len;
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
-    int seq = ++mmap_call_seq;
-    printf("sys_mmap[%d] start %p len %p\n", seq, start, len);
-
     if (!mmap_len_valid(len) || !mmap_start_valid(start))
-    {
-        printf("sys_mmap[%d] reject invalid args\n", seq);
         return (uint64)-1;
-    }
 
     if (start != 0 && len > MMAP_END - start)
-    {
-        printf("sys_mmap[%d] reject overflow range\n", seq);
         return (uint64)-1;
-    }
 
     uint32 npages = (uint32)(len / PGSIZE);
     // uvm_mmap 负责分配物理页并调用 vm_mappages 建立映射
     uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
     if (mapped == 0)
-    {
-        printf("sys_mmap[%d] alloc fail\n", seq);
         return (uint64)-1;
-    }
-
-    printf("sys_mmap[%d] mapped at %p npages %d\n", seq, mapped, npages);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
 
     return mapped;
 }
@@ -264,45 +176,58 @@ uint64 sys_mmap()
 */
 uint64 sys_munmap()
 {
-    proc_t *p = myproc();
-
     uint64 start;
     uint64 len;
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
-    int seq = ++munmap_call_seq;
-    printf("sys_munmap[%d] start %p len %p\n", seq, start, len);
-
     if (!mmap_len_valid(len) || start == 0 || (start % PGSIZE) != 0)
-    {
-        printf("sys_munmap[%d] reject invalid args\n", seq);
         return (uint64)-1;
-    }
 
     if (start < MMAP_BEGIN || start >= MMAP_END)
-    {
-        printf("sys_munmap[%d] reject out of range\n", seq);
         return (uint64)-1;
-    }
     if (len > MMAP_END - start)
-    {
-        printf("sys_munmap[%d] reject overflow range\n", seq);
         return (uint64)-1;
-    }
 
     uint32 npages = (uint32)(len / PGSIZE);
     // uvm_munmap 会在页表里逐段卸载映射并回收节点
     if (!uvm_munmap(start, npages))
-    {
-        printf("sys_munmap[%d] fail in unmap\n", seq);
         return (uint64)-1;
-    }
 
-    printf("sys_munmap[%d] ok npages %d\n", seq, npages);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
+    return 0;
+}
 
+uint64 sys_print_str()
+{
+    return 0;
+}
+
+uint64 sys_print_int()
+{
+    return 0;
+}
+
+uint64 sys_fork()
+{
+    return 0;
+}
+
+uint64 sys_wait()
+{
+    return 0;
+}
+
+uint64 sys_exit()
+{
+    return 0;
+}
+
+uint64 sys_sleep()
+{
+    return 0;
+}
+
+uint64 sys_getpid()
+{
     return 0;
 }

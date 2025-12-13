@@ -16,8 +16,61 @@ extern void trap_user_return();
 
 // in mem/kvm.c
 extern void kvm_clone_kernel_map(pgtbl_t dst);
+/* ------------本地变量----------- */
 
-static bool verify_page_equal(void *pa_a, void *pa_b)
+// 进程结构体数组 + 第一个用户进程的指针
+static proc_t proc_list[N_PROC];
+static proc_t *proczero;
+
+// 全局pid + 保护它的锁
+static int global_pid;
+static spinlock_t pid_lk;
+
+/* 获取一个pid */
+static int __attribute__((unused)) alloc_pid()
+{
+    int tmp = 0;
+    spinlock_acquire(&pid_lk);
+    assert(global_pid > 0, "alloc_pid: overflow");
+    tmp = global_pid++;
+    spinlock_release(&pid_lk);
+    return tmp;
+}
+
+/* 释放进程锁 + trap_user_return */
+static void __attribute__((unused)) proc_return()
+{
+
+}
+
+/* 进程模块初始化 */
+void proc_init()
+{
+    memset(proc_list, 0, sizeof(proc_list));
+    proczero = &proc_list[0];
+    global_pid = 1;
+    spinlock_init(&pid_lk, "pid");
+}
+
+/* 
+    申请一个UNUSED进程结构体(返回时带锁)
+    并执行通用的初始化逻辑
+*/
+proc_t *proc_alloc()
+{
+    return NULL;
+}
+
+/* 
+    回收一个进程结构体并释放它包含的资源
+    tips: 调用者需要持有进程锁
+*/
+void proc_free(proc_t *p)
+{
+
+}
+
+static bool __attribute__((unused)) verify_page_equal(void *pa_a, void *pa_b)
 {
     uint8 *lhs = (uint8 *)pa_a;
     uint8 *rhs = (uint8 *)pa_b;
@@ -29,7 +82,7 @@ static bool verify_page_equal(void *pa_a, void *pa_b)
     return true;
 }
 
-static bool verify_range_equal(pgtbl_t a, pgtbl_t b, uint64 begin, uint64 end)
+static bool __attribute__((unused)) verify_range_equal(pgtbl_t a, pgtbl_t b, uint64 begin, uint64 end)
 {
     if (begin >= end)
         return true;
@@ -55,7 +108,7 @@ static bool verify_range_equal(pgtbl_t a, pgtbl_t b, uint64 begin, uint64 end)
     return true;
 }
 
-static void run_pgtbl_checks(proc_t *p)
+static void __attribute__((unused)) run_pgtbl_checks(proc_t *p)
 {
     printf("[pgtbl-check] begin\n");
 
@@ -198,9 +251,6 @@ cleanup:
     printf("[pgtbl-check] end\n");
 }
 
-// 第一个用户进程
-static proc_t proczero;
-
 // 获得一个初始化过的用户页表
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
@@ -236,7 +286,7 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe)
 */
 void proc_make_first()
 {
-    proc_t *p = &proczero;
+    proc_t *p = proczero;
     memset(p, 0, sizeof(*p));
 
     p->pid = 1; // 第一个用户进程，给个固定 pid 即可
@@ -310,17 +360,110 @@ void proc_make_first()
     cpu_t *c = mycpu();
     c->proc = p;
 
-    run_pgtbl_checks(p);
 }
 
 // 启动第一个进程并切换上下文
 void proc_start_first()
 {
-    proc_t *p = &proczero;
+    proc_t *p = proczero;
     cpu_t *c = mycpu();
     
     // 从 CPU 的 ctx 切换到进程的 ctx
     swtch(&c->ctx, &p->ctx);
 
     // 正常情况下不会返回到这里
+}
+
+/*
+    父进程产生子进程
+    UNUSED -> RUNNABLE
+*/
+int proc_fork()
+{
+    return -1;
+}
+
+/*
+    进程主动放弃CPU控制权
+    RUNNING->RUNNABLE
+*/
+void proc_yield()
+{
+
+}
+
+/*
+    当父进程退出时, 让它的所有子进程认proczero为父
+    因为proczero永不退出, 可以回收子进程的资源
+*/
+static void __attribute__((unused)) proc_reparent(proc_t *parent)
+{
+
+}
+
+/*
+    唤醒等待呼叫的进程
+    由proc_exit调用
+    tips: 调用者需要持有p的进程锁
+*/
+static void __attribute__((unused)) proc_try_wakeup(proc_t *p)
+{
+
+}
+
+/*
+    进程退出
+    RUNNING -> ZOMBIE
+*/
+void proc_exit(int exit_code)
+{
+
+}
+
+/*
+    父进程等待一个子进程进入ZOMBIE状态
+    1. 如果等到: 释放子进程, 返回子进程的pid, 将子进程的退出状态传出到user_addr
+    2. 如果发现没孩子: 返回-1
+    3. 如果没等到: 父进程进入睡眠状态 
+*/
+int proc_wait(uint64 user_addr)
+{
+    return -1;
+}
+
+/*
+    进程等待sleep_space对应的资源, 进入睡眠状态
+    RUNNING -> SLEEPING
+*/
+void proc_sleep(void *sleep_space, spinlock_t *lock)
+{
+
+}
+
+/*
+    唤醒所有等待sleep_space的进程
+    SLEEPING -> RUNNABLE
+*/
+void proc_wakeup(void *sleep_space)
+{
+
+}
+
+/* 
+    用户进程切换到调度器
+    tips: 调用者保证持有当前进程的锁
+*/
+void proc_sched()
+{
+
+}
+
+/* 
+    调度器
+    RUNNABLE->RUNNING
+*/
+void proc_scheduler()
+{
+    while (1) {
+    }
 }

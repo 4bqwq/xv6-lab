@@ -18,13 +18,14 @@ int main()
         pmem_init();
         kvm_init();
         kvm_inithart();
+        mmap_init();
+        proc_init();
+        proc_make_first();
         trap_kernel_init();
         trap_kernel_inithart();
-        mmap_init();
-        proc_make_first();
         __sync_synchronize();
         started = 1;
-        proc_start_first();
+        proc_scheduler();
     } else {
 
         while (started == 0)
