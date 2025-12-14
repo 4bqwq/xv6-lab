@@ -1,623 +1,405 @@
-# LAB-5
+# Lab 6
 
 ## 项目运行与环境
 
 通过 `make qemu` 启动系统。
 
-## 一：系统调用流程
+## 一: 进程初始化与内核栈
 
-### 系统调用处理
+### 实现
 
-在 `src/kernel/trap/trap_user.c` 封装系统调用。当用户程序执行 `ecall` 指令时，会触发 `scause = 8` 的异常：
+在单进程基础上，我们需要引入进程数组 `proc_list` 来管理多个进程。每个进程需要独立的内核栈(`kstack`)，以确保在内核态执行时互不干扰。
+
+`src/kernel/mem/kvm.c`:
+我们将内核栈的映射逻辑从单栈改为遍历 `N_PROC` 个进程槽位，为每个进程分配物理页并在内核页表中建立固定虚拟地址的映射。
 
 ```c
-case 8: { // Environment call from U-mode (ecall)
-    tf->user_to_kern_epc += 4;
-    syscall();
-    break;
+void kvm_init() {
+	// ... (初始化内核页表)
+ 
+ 	// 预先为每个进程槽位准备一页内核栈，切换时使用固定虚拟地址
+ 	for (int i = 0; i < N_PROC; i++) {
+  		uint64 va = KSTACK(i);
+  		uint64 pa = (uint64)pmem_alloc(true);
+  		assert(pa != 0, "kvm_init: no mem for kstack");
+  		memset((void *)pa, 0, PGSIZE);
+  		vm_mappages(kernel_pgtbl, va, pa, PGSIZE, PTE_R | PTE_W);
+ 	}
 }
 ```
 
-执行系统调用时，需要把程序计数器向前挪4字节，跳过ecall指令，这样从内核返回用户态时就不会重复执行它。具体的系统调用功能则由syscall函数根据a7寄存器里的编号来分发处理。
-
-### 跨地址空间数据传递
-
-用户态和内核态使用不同的页表，需要专门的函数处理数据传递。在 `src/kernel/mem/uvm.c` 中实现了：
+`src/kernel/proc/proc.c`):
+`proc_alloc` 负责从 `proc_list` 中寻找空闲槽位(`UNUSED`)，初始化进程控制块。
 
 ```c
-static uint64 walk_user_va(pgtbl_t pgtbl, uint64 va)
-{
-    pte_t *pte = vm_getpte(pgtbl, va, false);
-    assert(pte != NULL, "uvm: vm_getpte returned NULL");
-    assert((*pte) & PTE_V, "uvm: pte not valid");
-    return (uint64)PTE_TO_PA(*pte);
+proc_t *proc_alloc() {
+ 	for (int i = 0; i < N_PROC; i++) {
+  		proc_t *p = &proc_list[i];
+  		spinlock_acquire(&p->lk); // 获取锁以保证互斥访问
+  		if (p->state != UNUSED) {
+            spinlock_release(&p->lk);
+            continue;
+  		}
+  
+        // 初始化 PID, 内核栈, trapframe 等
+        p->pid = alloc_pid();
+        p->state = USED;
+        // ...
+        return p;
+ 	}
+ 	return NULL;
 }
 ```
 
-`walk_user_va` 通过用户页表查找虚拟地址对应的物理页基址。`PTE_TO_PA` 宏从页表项中提取物理地址。
+### 测试验证
 
-`uvm_copyin` 函数处理跨页数据拷贝：
+![](pictures/lab6_test-1.png)
+
+系统成功启动双核，并由 PID 为 1 的 proczero 打印了 "hello world!"，证明进程结构体和内核栈初始化正确。
+
+追加内核栈隔离的测试：
+
+在内核初始化阶段探查 `KSTACK` 宏计算的虚拟地址，验证不同进程的内核栈之间是否存在隔离页（Guard Page）。
 
 ```c
-void uvm_copyin(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
-{
-    while (len > 0) {
-        uint64 va0 = PGROUNDDOWN(src);    // 当前用户页首地址
-        uint32 off = (uint32)(src - va0); // 页内偏移
-        uint32 npage = PGSIZE - off;      // 当前页还能拷多少字节
-        uint32 n = (len < npage) ? len : npage;
+#include "mod.h"
+#include "type.h"
+#include "../proc/type.h"
 
-        uint64 pa0 = walk_user_va(pgtbl, va0);
-        void* k_src = (void*)(pa0 + off);
-        void* k_dst = (void*)dst;
-        memmove(k_dst, k_src, n);
-
-        dst += n; src += n; len -= n;
-    }
+void kstack_probe(void) {
+ 	for (int i = 0; i < 4; i++) {
+  		uint64 va = KSTACK(i);
+  		printf("kstack[%d] va = %p\n", i, va);
+ 	}
+ 	printf("delta = %d\n", (long)(KSTACK(0) - KSTACK(1)));
 }
 ```
 
-这里使用了 `PGROUNDDOWN` 宏将地址向下对齐到页边界，`PGSIZE` 是页面大小常量(4096字节)。`memmove` 进行实际的内存拷贝。
+![](pictures/lab6_test-1(2).png)
 
-### 系统调用参数提取
+相邻内核栈的虚拟地址差值为 `8192` (2 * PGSIZE)，即一个栈页(4KB)加上一个保护页(4KB)，证明隔离布局正确。
 
-在 `src/kernel/syscall/sysfunc.c` 中，通过 `arg_uint64` 和 `arg_uint32` 从trapframe中提取参数：
+---
 
-```c
-uint64 sys_copyin()
-{
-    proc_t *p = myproc();
-    uint64 uaddr;
-    uint32 len;
-    arg_uint64(0, &uaddr);  // 第0个参数
-    arg_uint32(1, &len);    // 第1个参数
-    
-    int buf[32];
-    uvm_copyin(p->pgtbl, (uint64)buf, uaddr, len * sizeof(int));
-    // 处理数据...
-    return 0;
-}
-```
+## 二: 轮转调度
 
-`myproc()` 获取当前进程结构体，`p->pgtbl` 是用户页表基址。`arg_uint64` 内部通过 `p->tf->a0` 等寄存器访问参数。
+### 实现
 
-### 测试结果
+多进程调度靠 scheduler 的线程，配合 swtch 完成上下文切换。
 
-![](.\pictures\lab5_test-1.png)
-
-这个验证系统调用流程和数据传递是否正常。内核通过 sys_copyout 把数组 [1 2 3 4 5] 成功传到用户空间，sys_copyin 则顺利从用户空间读回数组并打印出来，而 sys_copyinstr 也正确获取了用户提供的字符串 hello, world。
-
-## 二：用户堆空间管理
-
-### 堆扩展实现
-
-`sys_brk` 系统调用处理堆空间的伸缩。堆从低地址向高地址生长，但不能越过 `MMAP_BEGIN`：
+`src/kernel/proc/proc.c`):
+`proc_scheduler` 是每个 CPU 核心的空闲循环，它不断扫描进程数组，找到 `RUNNABLE` 的进程并切换过去。
 
 ```c
-uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
-{
-    uint64 new_heap_top = cur_heap_top + len;
-    if (new_heap_top > MMAP_BEGIN) {
-        return (uint64)-1;
-    }
-
-    uint64 va_start = PGROUNDUP(cur_heap_top);
-    for (uint64 va = va_start; va < new_heap_top; va += PGSIZE) {
-        uint64 page = (uint64)pmem_alloc(false);
-        vm_mappages(pgtbl, va, page, PGSIZE, PTE_R | PTE_W | PTE_U);
-    }
-    return new_heap_top;
-}
-```
-
-`PGROUNDUP` 宏将地址向上对齐到页边界。`pmem_alloc(false)` 从用户内存池分配物理页，`vm_mappages` 建立虚拟地址到物理地址的映射，权限位 `PTE_R | PTE_W | PTE_U` 表示可读可写的用户页面。
-
-### 栈自动扩展
-
-栈扩展通过页面错误处理实现。在 `trap_user_handler` 中处理 `scause = 15` 的页面错误：
-
-```c
-case 15: { // Store/AMO page fault
-    uint64 fault_addr = stval;
-    uint64 current_ustack_bottom = TRAPFRAME - p->ustack_npage * PGSIZE;
-    
-    if (fault_addr < current_ustack_bottom && fault_addr >= TRAPFRAME - PGSIZE * 10) {
-        uint64 new_ustack_npage = uvm_ustack_grow(p->pgtbl, p->ustack_npage, fault_addr);
-        if (new_ustack_npage != (uint64)-1) {
-            p->ustack_npage = new_ustack_npage;
-            break;
+void proc_scheduler() {
+ 	struct cpu *c = mycpu();
+ 	while (1) {
+        intr_on(); // 开启中断，避免死锁
+        for (int i = 0; i < N_PROC; i++) {
+            proc_t *p = &proc_list[i];
+            spinlock_acquire(&p->lk);
+            if (p->state == RUNNABLE) {
+                p->state = RUNNING;
+                c->proc = p;
+                swtch(&c->ctx, &p->ctx); // 切换到进程上下文
+                c->proc = NULL;
+            }
+            spinlock_release(&p->lk);
         }
-    }
+ 	}
 }
 ```
 
-`stval` 寄存器保存触发页面错误的地址。`TRAPFRAME` 是trapframe页面的地址，栈在其下方生长。`uvm_ustack_grow` 计算需要扩展的页数并分配映射：
+`proc_fork` 实现了进程的复制，包括深拷贝用户地址空间和 trapframe。
 
 ```c
-uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr)
-{
-    uint64 current_stack_bottom = TRAPFRAME - old_ustack_npage * PGSIZE;
-    uint64 target_stack_bottom = PGROUNDDOWN(fault_addr);
-    
-    if (target_stack_bottom < current_stack_bottom) {
-        uint64 pages_to_add = (current_stack_bottom - target_stack_bottom) / PGSIZE;
-        for (uint64 i = 0; i < pages_to_add; i++) {
-            uint64 new_page_va = current_stack_bottom - (i + 1) * PGSIZE;
-            uint64 page = (uint64)pmem_alloc(false);
-            memset((void*)page, 0, PGSIZE);
-            vm_mappages(pgtbl, new_page_va, page, PGSIZE, PTE_R | PTE_W | PTE_U);
-        }
-        return old_ustack_npage + pages_to_add;
-    }
-    return -1;
+int proc_fork() {
+ 	proc_t *parent = myproc();
+ 	proc_t *child = proc_alloc();
+ 	// 复制 trapframe, 栈, 堆等元数据
+ 	memmove(child->tf, parent->tf, sizeof(trapframe_t));
+ 	child->tf->a0 = 0; // 子进程返回值为 0
+ 	// 复制页表
+ 	uvm_copy_pgtbl(parent->pgtbl, child->pgtbl, ...);
+ 
+ 	child->state = RUNNABLE; // 子进程就绪
+ 	return child->pid;
 }
 ```
 
-### 测试结果
+### 测试验证
 
-![](.\pictures\lab5_test-2.png)
+通过连续 `fork` 创建多个进程，观察它们是否并发执行。
 
-在 look 事件，堆顶为 0x2000，页表中只映射了 physical page 1。
-在 grow 事件中，堆顶增长到 0xb000，页表中新增了 physical page 2 到 10，共 9 个物理页。
-在 equal 事件中，堆顶保持不变，页表内容与 grow 阶段一致，没有发生变化。
-在 ungrow 事件中，堆顶缩小到 0x6000，physical page 6 到 10 不再出现，说明对应的物理页已被释放。
+运行结果:
 
-![](.\pictures\lab5_test-3.png)
+![](pictures/lab6_test-2.png)
 
-第一次发生页面错误时，ustack_npage 从1增加到2，成功读取了字符串hello。随后第二次页面错误触发，ustack_npage 进一步扩展到5，顺利获取了字符串world。
+日志中 `level-2!` 和 `level-3!` 以及 `proc X is running...` 交替出现，表明父子进程被分配到了不同的 CPU 或在同一 CPU 上轮转执行，调度器工作正常。
 
-## 三：mmap_region_node
+---
 
-### 资源池初始化
+## 三: 时钟抢占
 
-在 `src/kernel/mem/mmap.c` 中实现了固定大小的资源池：
+### 实现
+
+为了防止进程独占 CPU，我们在时钟中断处理中加入抢占逻辑。
+
+`src/kernel/trap/trap_kernel.c` & `trap_user.c`:
+当发生 S-mode 时钟中断 (trap_id=5) 或软件中断 (trap_id=1) 时，如果当前有进程在运行，则调用 `proc_yield`。
 
 ```c
-void mmap_init()
-{
-    spinlock_init(&list_lk, "mmap_list");
-    list_head.next = &(node_list[0]);
-    
-    for(int i = 0; i < N_MMAP - 1; i++) {
-        node_list[i].next = &(node_list[i + 1]);
-    }
-    node_list[N_MMAP - 1].next = 0;
+void trap_user_handler() {
+ 	// ...
+ 	switch (trap_id) {
+  	case 5: // Timer interrupt
+		timer_interrupt_handler();
+		if (c->proc != NULL && c->proc->state == RUNNING)
+ 			proc_yield(); // 强制让出 CPU
+		break;
+ 	}
 }
 ```
 
-`spinlock_init` 初始化自旋锁，`list_head` 是链表头，`node_list` 是预分配的节点数组。`N_MMAP` 是最大节点数常量。
-
-### 资源分配
+`src/kernel/proc/proc.c`:
+`proc_yield` 将进程状态改回 `RUNNABLE` 并调用调度器。
 
 ```c
-mmap_region_t *mmap_region_alloc()
-{
-    spinlock_acquire(&list_lk);
-    
-    if(list_head.next == 0) {
-        spinlock_release(&list_lk);
-        panic("mmap_region_alloc: out of nodes");
-    }
-    
-    mmap_region_node_t *node = list_head.next;
-    list_head.next = node->next;
-    
-    spinlock_release(&list_lk);
-    
-    return &(node->mmap);
+void proc_yield() {
+ 	proc_t *p = myproc();
+ 	spinlock_acquire(&p->lk);
+ 	p->state = RUNNABLE;
+	proc_sched(); // 切换回调度器
+ 	spinlock_release(&p->lk);
 }
 ```
 
-`spinlock_acquire` 和 `spinlock_release` 保护链表操作。通过 `container_of` 宏的逆向操作，将 `mmap_region_t*` 转换回 `mmap_region_node_t*` 进行释放。
+### 测试验证
 
-### 测试结果
+补充测试：
 
-![](.\pictures\lab5_test-4(1).png)
-
-![](.\pictures\lab5_test-4(2).png)
-
-在多核并发申请 `mmap_region_node` 的测试中，输出的 `index` 序列出现了非连续的跳跃现象，说明多个 CPU 的分配操作在时间上发生了交错执行。
-
-## 四：mmap 与 munmap 实现
-
-### 地址分配算法
-
-`uvm_mmap_find` 函数实现首次适应算法寻找合适的位置，在地址空间中查找第一个足够容纳请求大小的空闲区域。
+父子进程各自执行死循环并打印 tick，验证是否会自动切换。
 
 ```c
-static uint64 uvm_mmap_find(mmap_region_t *head_mmap, uint64 len,
-                            mmap_region_t **p_last_mmap, mmap_region_t **p_tmp_mmap)
-{
-    mmap_region_t *prev = NULL;
-    mmap_region_t *curr = head_mmap;
-    uint64 candidate = MMAP_BEGIN;
+#include "sys.h"
 
-    while (curr != NULL) {
-        if (candidate + len <= curr->begin) {
-            *p_last_mmap = prev;
-            *p_tmp_mmap = curr;
-            return candidate;
-        }
-        candidate = curr->begin + (uint64)curr->npages * PGSIZE;
-        prev = curr;
-        curr = curr->next;
-    }
-    
-    if (candidate + len <= MMAP_END) {
-        *p_last_mmap = prev;
-        *p_tmp_mmap = NULL;
-        return candidate;
-    }
-    return 0;
+int main()
+{
+ 	int pid = syscall(SYS_fork);
+ 	while (1) {
+  		if (pid == 0)
+			syscall(SYS_print_str, "child tick\n");
+  		else
+			syscall(SYS_print_str, "parent tick\n");
+  		// 小步忙等，依赖时钟中断抢占
+  		for (volatile int i = 0; i < 200000; i++)
+			;
+ 	}
 }
 ```
 
-`MMAP_BEGIN` 和 `MMAP_END` 定义了mmap区域的地址范围。函数返回找到的起始地址，并通过输出参数返回前驱和后继节点。
+![](pictures/lab6_test-3.png)
 
-### 相邻区域合并
+即便父子进程都在执行 `while(1)` 死循环，输出依然是交替的。这证明时钟中断成功打断了当前进程，强制触发了调度。
+
+抢占下的 Fork 测试：
+
+![](pictures/lab6_test-3(2).png)
+
+在开启抢占的情况下，多进程并发打印依然正常工作。
+
+---
+
+## 四: 进程生命周期
+
+### 实现
+
+实现完整的 `exit` 和 `wait` 机制，确保进程资源能被正确回收，避免僵尸进程。
+
+`src/kernel/proc/proc.c`):
+
+`proc_exit`: 进程结束时，标记为 `ZOMBIE`，唤醒父进程，并将子进程过继给 `proczero`。
+`proc_wait`: 父进程遍历 `proc_list`，查找 `ZOMBIE` 状态的子进程，释放其内核栈和页表。
 
 ```c
-static void mmap_merge(mmap_region_t *mmap_1, mmap_region_t *mmap_2, bool keep_mmap_1)
-{
-    assert(mmap_1->begin + mmap_1->npages * PGSIZE == mmap_2->begin,
-           "mmap_merge: regions not adjacent");
+void proc_exit(int exit_code) {
+     proc_t *p = myproc();
+     p->exit_code = exit_code;
+     proc_reparent(p);// 过继子进程
+     proc_wakeup(p->parent);// 唤醒父进程
+     p->state = ZOMBIE;
+     proc_sched(); // 调度出去，不再返回
+     panic("unreachable");
+}
+```
 
-    if (keep_mmap_1) {
-        mmap_1->npages += mmap_2->npages;
-        mmap_region_free(mmap_2);
+### 测试验证
+
+子进程操作内存后退出，父进程等待并检查退出码。
+
+![](pictures/lab6_test-4.png)
+
+子进程成功打印了各内存段内容并退出，父进程成功 `wait` 到了子进程并获取了正确的退出码 `1234` (打印 "good boy!")，证明生命周期管理完整。
+
+---
+
+## 五: 睡眠与唤醒
+
+### 实现
+
+为了提高效率，我们将 `wait` 的实现从轮询改为睡眠等待。
+
+`src/kernel/proc/proc.c`:
+
+`proc_sleep(chan, lk)`: 原子地释放锁 `lk` 并将进程状态置为 `SLEEPING`，记录睡眠通道 `chan`。
+`proc_wakeup(chan)`: 唤醒所有在 `chan` 上睡眠的进程。
+
+```c
+void proc_sleep(void *sleep_space, spinlock_t *lock) {
+     proc_t *p = myproc();
+     // 必须持有锁进入，以保护 sleep_space 的设置和状态切换的原子性
+     if (lock != &p->lk) {
+          spinlock_acquire(&p->lk);
+          spinlock_release(lock);
+     }
+     p->sleep_space = sleep_space;
+     p->state = SLEEPING;
+     proc_sched(); // 切换进程
+     // ... 醒来后重新获取锁
+}
+```
+
+### 测试验证
+
+验证 `sleep` 系统调用。
+
+```c
+#include "sys.h"
+
+int main()
+{
+    int pid = syscall(SYS_fork);
+    if (pid == 0) {
+        syscall(SYS_print_str, "Ready to sleep!\n");
+        syscall(SYS_sleep, 30);
+        syscall(SYS_print_str, "Ready to exit!\n");
+        syscall(SYS_exit, 0);
     } else {
-        mmap_2->begin -= mmap_1->npages * PGSIZE;
-        mmap_2->npages += mmap_1->npages;
-        mmap_region_free(mmap_1);
+        syscall(SYS_wait, 0);
+        syscall(SYS_print_str, "Child exit!\n");
     }
+    while(1);
 }
 ```
 
-合并前检查两个区域是否相邻，然后根据 `keep_mmap_1` 参数决定保留哪个节点。
+![](pictures/lab6_test-5.png)
 
-### 部分释放处理
+---
 
-`uvm_munmap` 支持部分释放，可能需要分割现有区域：
+## 六: 睡眠锁
+
+### 实现
+
+实现一种长周期的锁 `sleeplock`，当获取锁失败时，进程会睡眠而不是自旋，从而释放 CPU 给其他进程使用。
+
+`src/kernel/lock/sleeplock.c`:
 
 ```c
-bool uvm_munmap(uint64 begin, uint32 npages)
-{
-    // 先扫描一遍确认区间被完全覆盖，防止释放了一半才发现不合法
-    uint64 probe = begin;
-    mmap_region_t *check = curr;
-    while (check && begin >= check->begin + (uint64)check->npages * PGSIZE) {
-        prev = check;
-        check = check->next;
-    }
-    while (probe < end) {
-        if (check == NULL) return false;
-        uint64 region_start = check->begin;
-        uint64 region_end = region_start + (uint64)check->npages * PGSIZE;
-        if (probe < region_start || probe >= region_end) return false;
-        uint64 chunk_end = (end < region_end) ? end : region_end;
-        probe = chunk_end;
-        if (probe < end) check = check->next;
-    }
+void sleeplock_acquire(sleeplock_t *lk) {
+	while (1) {
+    	spinlock_acquire(&lk->lock);
+        if (!lk->locked) {
+        	lk->locked = 1; // 获取锁成功
+            lk->pid = myproc()->pid;
+            spinlock_release(&lk->lock);
+            break;
+         }
+         // 获取失败，在 lk 上睡眠
+         proc_sleep(lk, &lk->lock);
+	}
+}
 
-    uint64 cursor = begin;
-    while (cursor < end) {
-        uint64 region_start = curr->begin;
-        uint64 region_end = region_start + (uint64)curr->npages * PGSIZE;
-        uint64 chunk_end = (end < region_end) ? end : region_end;
-        
-        vm_unmappages(p->pgtbl, cursor, chunk_len, true);
-        
-        if (cursor == region_start && chunk_end == region_end) {
-            // 完全释放
-            mmap_region_t *next = curr->next;
-            if (prev) prev->next = next; else p->mmap = next;
-            mmap_region_free(curr);
-            curr = next;
-        } else if (cursor == region_start) {
-            // 头部释放
-            curr->begin = chunk_end;
-            curr->npages -= chunk_pages;
-            prev = curr;
-        } else if (chunk_end == region_end) {
-            // 尾部释放
-            curr->npages -= chunk_pages;
-            prev = curr;
-            curr = curr->next;
-        } else {
-            // 中间分割
-            uint32 left_pages = (uint32)((cursor - region_start) / PGSIZE);
-            uint32 right_pages = (uint32)((region_end - chunk_end) / PGSIZE);
-            mmap_region_t *tail = mmap_region_alloc();
-            tail->begin = chunk_end;
-            tail->npages = right_pages;
-            tail->next = curr->next;
-            curr->npages = left_pages;
-            curr->next = tail;
-            prev = curr;
-            curr = tail;
+void sleeplock_release(sleeplock_t *lk) {
+	spinlock_acquire(&lk->lock);
+    lk->locked = 0;
+    lk->pid = -1;
+    proc_wakeup(lk); // 唤醒等待该锁的进程
+    spinlock_release(&lk->lock);
+}
+```
+
+### 测试验证
+
+两个子进程竞争同一个睡眠锁。
+
+```c
+#include "sys.h"
+
+int main()
+{
+    int pid = syscall(SYS_fork);
+    if (pid == 0) {
+        for (int i = 0; i < 3; i++) {
+            syscall(SYS_sleeplock_acquire);
+            syscall(SYS_sleep, 5);
+            syscall(SYS_sleeplock_release);
+            syscall(SYS_sleep, 1);
         }
-        cursor = chunk_end;
-    }
-    return true;
-}
-```
-
-`vm_unmappages` 函数取消页表映射并释放物理页，第三个参数 `true` 表示同时释放物理页。
-
-### 测试结果
-
-![](.\pictures\lab5_test-5.png)
-
-
-![img](file://wsl.localhost/Ubuntu/home/ubuntu/Programs/OS/xv6-lab/pictures/lab5_test-5.png?lastModify=1765688012)
-
-第一次 mmap 在地址 fb002000 分配了 3 页内存，映射顺利。在 fb008000 又分配了 2 页，用来验证非连续分配是否可行。后续几次 mmap 操作混合使用了系统自动选择地址和手动指定地址的方式。有调用 munmap，分别测试了部分释放、完整释放，以及映射区域被分割后的处理情况。
-
-补充了一轮更细的 mmap/munmap 覆盖测试
-
-```c
-// begin=0 时 first-fit 掉进中间空洞，先挖洞再回填
-syscall(SYS_mmap, MMAP_BEGIN, 8 * PGSIZE);
-syscall(SYS_munmap, MMAP_BEGIN + 2 * PGSIZE, 2 * PGSIZE);
-syscall(SYS_mmap, 0, 2 * PGSIZE);
-syscall(SYS_munmap, MMAP_BEGIN, 8 * PGSIZE);
-
-// 同时与左右相邻块合并，随后整段回收验证链表清理
-syscall(SYS_mmap, MMAP_BEGIN, 2 * PGSIZE);
-syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 2 * PGSIZE);
-syscall(SYS_mmap, MMAP_BEGIN + 2 * PGSIZE, 2 * PGSIZE);
-syscall(SYS_munmap, MMAP_BEGIN, 6 * PGSIZE);
-
-// 非法输入路径：重叠、越界、跨空洞 munmap 都应该被拒绝
-syscall(SYS_mmap, MMAP_BEGIN, 2 * PGSIZE);
-syscall(SYS_mmap, MMAP_BEGIN + 4 * PGSIZE, 2 * PGSIZE);
-syscall(SYS_mmap, MMAP_BEGIN + 1 * PGSIZE, 2 * PGSIZE); // 预期失败
-syscall(SYS_mmap, MMAP_END, 1 * PGSIZE);                // 预期失败
-syscall(SYS_munmap, MMAP_BEGIN, 4 * PGSIZE);            // 预期失败
-
-// 拆分场景：中间切开再分步收尾，覆盖头部、尾部、整段释放三条分支
-syscall(SYS_mmap, MMAP_BEGIN + 12 * PGSIZE, 6 * PGSIZE);
-syscall(SYS_munmap, MMAP_BEGIN + 14 * PGSIZE, 2 * PGSIZE); // 中间拆出一块
-syscall(SYS_munmap, MMAP_BEGIN + 16 * PGSIZE, 1 * PGSIZE); // 剪掉右半块的头
-syscall(SYS_munmap, MMAP_BEGIN + 17 * PGSIZE, 1 * PGSIZE); // 把剩余右半块收掉
-syscall(SYS_munmap, MMAP_BEGIN + 12 * PGSIZE, 2 * PGSIZE); // 左半块释放
-syscall(SYS_munmap, MMAP_BEGIN + 18 * PGSIZE, 2 * PGSIZE); // 全部清空
-
-// 兜底失败用例：过大长度、未映射地址都应该直接失败不动链表
-syscall(SYS_mmap, 0, (MMAP_END - MMAP_BEGIN) + PGSIZE);    // 预期失败
-syscall(SYS_mmap, MMAP_BEGIN + 0x1000 * PGSIZE, 2 * PGSIZE);
-syscall(SYS_munmap, MMAP_BEGIN + 0x1001 * PGSIZE, 2 * PGSIZE); // 未映射，预期失败
-```
-
-为了更加直观，补充了几个print语句，sys_mmap/sys_munmap 打印 start/len/结果。
-
-```
-/*
-    增加一段内存映射
-    uint64 start 起始地址
-    uint32 len   范围 (字节,需检查是否是page-aligned)
-    成功返回映射空间的起始地址, 失败返回-1
-*/
-uint64 sys_mmap()
-{
-    proc_t *p = myproc();
-
-    uint64 start;
-    uint64 len;
-    arg_uint64(0, &start);
-    arg_uint64(1, &len);
-
-    int seq = ++mmap_call_seq;
-    printf("sys_mmap[%d] start %p len %p\n", seq, start, len);
-
-    if (!mmap_len_valid(len) || !mmap_start_valid(start))
-    {
-        printf("sys_mmap[%d] reject invalid args\n", seq);
-        return (uint64)-1;
+        syscall(SYS_exit, 0);
     }
 
-    if (start != 0 && len > MMAP_END - start)
-    {
-        printf("sys_mmap[%d] reject overflow range\n", seq);
-        return (uint64)-1;
+    int pid2 = syscall(SYS_fork);
+    if (pid2 == 0) {
+        for (int i = 0; i < 3; i++) {
+            syscall(SYS_sleeplock_acquire);
+            syscall(SYS_sleep, 5);
+            syscall(SYS_sleeplock_release);
+            syscall(SYS_sleep, 1);
+        }
+        syscall(SYS_exit, 0);
     }
 
-    uint32 npages = (uint32)(len / PGSIZE);
-    // uvm_mmap 负责分配物理页并调用 vm_mappages 建立映射
-    uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
-    if (mapped == 0)
-    {
-        printf("sys_mmap[%d] alloc fail\n", seq);
-        return (uint64)-1;
-    }
-
-    printf("sys_mmap[%d] mapped at %p npages %d\n", seq, mapped, npages);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
-
-    return mapped;
-}
-
-/*
-    解除一段内存映射
-    uint64 start 起始地址
-    uint32 len   范围 (字节, 需检查是否是page-aligned)
-    成功返回0 失败返回-1
-*/
-uint64 sys_munmap()
-{
-    proc_t *p = myproc();
-
-    uint64 start;
-    uint64 len;
-    arg_uint64(0, &start);
-    arg_uint64(1, &len);
-
-    int seq = ++munmap_call_seq;
-    printf("sys_munmap[%d] start %p len %p\n", seq, start, len);
-
-    if (!mmap_len_valid(len) || start == 0 || (start % PGSIZE) != 0)
-    {
-        printf("sys_munmap[%d] reject invalid args\n", seq);
-        return (uint64)-1;
-    }
-
-    if (start < MMAP_BEGIN || start >= MMAP_END)
-    {
-        printf("sys_munmap[%d] reject out of range\n", seq);
-        return (uint64)-1;
-    }
-    if (len > MMAP_END - start)
-    {
-        printf("sys_munmap[%d] reject overflow range\n", seq);
-        return (uint64)-1;
-    }
-
-    uint32 npages = (uint32)(len / PGSIZE);
-    // uvm_munmap 会在页表里逐段卸载映射并回收节点
-    if (!uvm_munmap(start, npages))
-    {
-        printf("sys_munmap[%d] fail in unmap\n", seq);
-        return (uint64)-1;
-    }
-
-    printf("sys_munmap[%d] ok npages %d\n", seq, npages);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
-
+    int code = 0;
+    syscall(SYS_wait, &code);
+    syscall(SYS_wait, &code);
+    while (1);
     return 0;
 }
+
 ```
 
- ![](.\pictures\lab5_test-5(2).png)
+![](pictures/lab6_test-6.png)
 
-如图所示, `sys_mmap[5] start 0 len 2000` 实际返回地址为 `fb000000`, 表明在 `begin=0` 的情况下映射优先落入已存在的空洞, 验证了 first-fit 分配策略; `sys_mmap[8] alloc fail`、`sys_mmap[9] reject invalid args` 以及 `sys_munmap[4] fail in unmap` 对应重叠、越界和跨空洞等非法请求, 且后续映射仍能正常建立与回收, 说明失败路径不会破坏链表状态; `sys_mmap[12]` 之后连续出现的 `sys_munmap[8..11] ok` 覆盖了中间拆分、剪除头尾及整段回收等多种 `munmap` 分支, 最后的 `sys_munmap[12] fail in unmap` 表明对未映射地址的回收请求被正确拒绝。
+进程 2 获取锁后进入睡眠，其他尝试获取锁的进程将会阻塞(sleep)，直到进程 2 释放锁。
 
-## 五：页表复制与销毁
+---
 
-### 递归页表销毁
+## 七: 基于时钟的睡眠
+
+### 实现
+
+完善 `sys_sleep`，使其利用内核的时钟中断进行唤醒，而不是忙等。
+
+`src/kernel/trap/timer.c`:
+
+`timer_wait`: 循环检查系统滴答数 `sys_timer.ticks`。如果时间未到，调用 `proc_sleep` 在 `sys_timer` 上等待。
+`timer_update`: 每次时钟中断更新 ticks 时，调用 `proc_wakeup(&sys_timer)` 唤醒所有等待时钟的进程。
 
 ```c
-static void destroy_pgtbl(pgtbl_t pgtbl, uint32 level)
-{
-    for (int i = 0; i < PGSIZE / (int)sizeof(pte_t); i++) {
-        pte_t pte = pgtbl[i];
-        if ((pte & PTE_V) == 0) continue;
-
-        if (PTE_CHECK(pte) && level > 1) {
-            destroy_pgtbl((pgtbl_t)PTE_TO_PA(pte), level - 1);
-        } else if (pte & PTE_U) {
-            pmem_free((uint64)PTE_TO_PA(pte), false);
-        }
-        pgtbl[i] = 0;
-    }
-    pmem_free((uint64)pgtbl, true);
+void timer_wait(uint64 ntick) {
+	proc_t *p = myproc();
+ 	spinlock_acquire(&timer_lk);
+ 	uint64 target = sys_timer.ticks + ntick;
+ 	while (sys_timer.ticks < target) {
+  		if (p != NULL) printf("proc %d is sleeping!\n", p->pid);
+  		proc_sleep(&sys_timer, &timer_lk); // 睡眠，等待时钟中断唤醒
+ 	}
+ 	spinlock_release(&timer_lk);
 }
 ```
 
-`PTE_CHECK` 宏判断页表项是否指向下一级页表。用户页通过 `pmem_free(..., false)` 释放，页表页通过 `pmem_free(..., true)` 释放。
+### 测试验证
 
-### 选择性页表复制
+![](pictures/lab6_test-7.png)
 
-```c
-static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end)
-{
-    uint64 start = PGROUNDDOWN(begin);
-    uint64 stop = PGROUNDUP(end);
-
-    for (uint64 va = start; va < stop; va += PGSIZE) {
-        pte_t *pte = vm_getpte(old, va, false);
-        if (pte == NULL || (*pte & PTE_V) == 0 || PTE_CHECK(*pte)) continue;
-        if (((*pte) & PTE_U) == 0) continue;
-
-        uint64 pa = (uint64)PTE_TO_PA(*pte);
-        int flags = (int)PTE_FLAGS(*pte);
-        uint64 page = (uint64)pmem_alloc(false);
-        memmove((void *)page, (const void *)pa, PGSIZE);
-        vm_mappages(new, va, page, PGSIZE, flags);
-    }
-}
-```
-
-`PTE_FLAGS` 宏提取页表项的权限位。只复制用户页面，跳过内核恒等映射和页表页。
-
-### 完整性验证机制
-
-在 `src/kernel/proc/proc.c` 中实现了验证流程：
-
-```c
-static bool verify_page_equal(void *pa_a, void *pa_b)
-{
-    uint8 *lhs = (uint8 *)pa_a;
-    uint8 *rhs = (uint8 *)pa_b;
-    for (uint32 i = 0; i < PGSIZE; i++) {
-        if (lhs[i] != rhs[i]) return false;
-    }
-    return true;
-}
-
-static bool verify_range_equal(pgtbl_t a, pgtbl_t b, uint64 begin, uint64 end)
-{
-    for (uint64 va = start; va < stop; va += PGSIZE) {
-        pte_t *pte_a = vm_getpte(a, va, false);
-        pte_t *pte_b = vm_getpte(b, va, false);
-        
-        bool valid_a = pte_a && (*pte_a & PTE_V) && !PTE_CHECK(*pte_a) && ((*pte_a) & PTE_U);
-        bool valid_b = pte_b && (*pte_b & PTE_V) && !PTE_CHECK(*pte_b) && ((*pte_b) & PTE_U);
-        
-        if (valid_a != valid_b) return false;
-        if (valid_a && !verify_page_equal((void *)PTE_TO_PA(*pte_a), (void *)PTE_TO_PA(*pte_b))) return false;
-    }
-    return true;
-}
-```
-
-验证包括内容一致性和写时复制隔离性测试，确保页表复制的正确性。
-
-### 测试结果
-
-实验要求自己设计测试用例，我写了代码测试。这里是做了四方面，复制出来的页表内容是不是和原版一模一样；改了副本会不会动到原来的页表；各种地址边界情况能不能处理好；还有物理页面有没有被正确分配和释放。
-
-验证代码：
-
-```c
-// 在 main.c 中的验证流程
-printf("[pgtbl-check] begin\n");
-
-// 1. 堆区域复制测试
-uvm_copy_range(p->pgtbl, new_pgtbl, p->heap_top, p->heap_top + PGSIZE);
-assert(verify_range_equal(p->pgtbl, new_pgtbl, p->heap_top, p->heap_top + PGSIZE), "heap copy failed");
-printf("[pgtbl-check] heap copy ok\n");
-
-// 2. 栈区域复制测试  
-uvm_copy_range(p->pgtbl, new_pgtbl, TRAPFRAME - p->ustack_npage * PGSIZE, TRAPFRAME);
-assert(verify_range_equal(p->pgtbl, new_pgtbl, TRAPFRAME - p->ustack_npage * PGSIZE, TRAPFRAME), "stack copy failed");
-printf("[pgtbl-check] stack copy ok\n");
-
-// 3. mmap区域复制测试
-mmap_region_t *mmap = p->mmap;
-while (mmap != NULL) {
-    uint64 begin = mmap->begin;
-    uint64 end = begin + (uint64)mmap->npages * PGSIZE;
-    uvm_copy_range(p->pgtbl, new_pgtbl, begin, end);
-    assert(verify_range_equal(p->pgtbl, new_pgtbl, begin, end), "mmap copy failed");
-    mmap = mmap->next;
-}
-printf("[pgtbl-check] mmap copy ok\n");
-
-// 4. 隔离性测试
-char *test_addr = (char *)p->heap_top;
-*test_addr = 'X';
-assert(!verify_range_equal(p->pgtbl, new_pgtbl, p->heap_top, p->heap_top + PGSIZE), "isolation test failed");
-printf("[pgtbl-check] copy isolation ok\n");
-
-// 5. 销毁测试
-uvm_destroy_pgtbl(new_pgtbl, 3);
-printf("[pgtbl-check] destroy empty ok\n");
-
-printf("[pgtbl-check] end\n");
-```
-
-![](.\pictures\lab5_test-6.png)
+进程 2 反复打印“proc 2 is sleeping!”，说明它在调用 sys_sleep 后确实释放了 CPU 并进入睡眠。随后，时钟中断触发 timer_update，成功将它唤醒。但醒来后发现延时还没到，又重新睡去。
