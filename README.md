@@ -83,7 +83,7 @@ uint64 sys_copyin()
 
 ### 测试结果
 
-![](.\pictures\lab5_test-1.png)
+![](pictures/lab5_test-1.png)
 
 这个验证系统调用流程和数据传递是否正常。内核通过 sys_copyout 把数组 [1 2 3 4 5] 成功传到用户空间，sys_copyin 则顺利从用户空间读回数组并打印出来，而 sys_copyinstr 也正确获取了用户提供的字符串 hello, world。
 
@@ -155,14 +155,14 @@ uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr
 
 ### 测试结果
 
-![](.\pictures\lab5_test-2.png)
+![](pictures/lab5_test-2.png)
 
 在 look 事件，堆顶为 0x2000，页表中只映射了 physical page 1。
 在 grow 事件中，堆顶增长到 0xb000，页表中新增了 physical page 2 到 10，共 9 个物理页。
 在 equal 事件中，堆顶保持不变，页表内容与 grow 阶段一致，没有发生变化。
 在 ungrow 事件中，堆顶缩小到 0x6000，physical page 6 到 10 不再出现，说明对应的物理页已被释放。
 
-![](.\pictures\lab5_test-3.png)
+![](pictures/lab5_test-3.png)
 
 第一次发生页面错误时，ustack_npage 从1增加到2，成功读取了字符串hello。随后第二次页面错误触发，ustack_npage 进一步扩展到5，顺利获取了字符串world。
 
@@ -212,9 +212,9 @@ mmap_region_t *mmap_region_alloc()
 
 ### 测试结果
 
-![](.\pictures\lab5_test-4(1).png)
+![](pictures/lab5_test-4(1).png)
 
-![](.\pictures\lab5_test-4(2).png)
+![](pictures/lab5_test-4(2).png)
 
 在多核并发申请 `mmap_region_node` 的测试中，输出的 `index` 序列出现了非连续的跳跃现象，说明多个 CPU 的分配操作在时间上发生了交错执行。
 
@@ -346,7 +346,7 @@ bool uvm_munmap(uint64 begin, uint32 npages)
 
 ### 测试结果
 
-![](.\pictures\lab5_test-5.png)
+![](pictures/lab5_test-5.png)
 
 
 ![img](file://wsl.localhost/Ubuntu/home/ubuntu/Programs/OS/xv6-lab/pictures/lab5_test-5.png?lastModify=1765688012)
@@ -491,7 +491,7 @@ uint64 sys_munmap()
 }
 ```
 
- ![](.\pictures\lab5_test-5(2).png)
+ ![](pictures/lab5_test-5(2).png)
 
 如图所示, `sys_mmap[5] start 0 len 2000` 实际返回地址为 `fb000000`, 表明在 `begin=0` 的情况下映射优先落入已存在的空洞, 验证了 first-fit 分配策略; `sys_mmap[8] alloc fail`、`sys_mmap[9] reject invalid args` 以及 `sys_munmap[4] fail in unmap` 对应重叠、越界和跨空洞等非法请求, 且后续映射仍能正常建立与回收, 说明失败路径不会破坏链表状态; `sys_mmap[12]` 之后连续出现的 `sys_munmap[8..11] ok` 覆盖了中间拆分、剪除头尾及整段回收等多种 `munmap` 分支, 最后的 `sys_munmap[12] fail in unmap` 表明对未映射地址的回收请求被正确拒绝。
 
@@ -620,4 +620,4 @@ printf("[pgtbl-check] destroy empty ok\n");
 printf("[pgtbl-check] end\n");
 ```
 
-![](.\pictures\lab5_test-6.png)
+![](pictures/lab5_test-6.png)
