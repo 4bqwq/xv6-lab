@@ -8,3 +8,5 @@
 #define SYS_wait 8          // 等待子进程退出
 #define SYS_exit 9          // 进程退出
 #define SYS_sleep 10        // 进程睡眠一段时间
+#define SYS_sleeplock_acquire 14
+#define SYS_sleeplock_release 15

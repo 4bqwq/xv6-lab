@@ -17,8 +17,10 @@
 #define SYS_copyin 11       // 用户->内核数据复制
 #define SYS_copyout 12      // 内核->用户数据复制
 #define SYS_copyinstr 13    // 用户->内核字符串复制
+#define SYS_sleeplock_acquire 14
+#define SYS_sleeplock_release 15
 
-#define SYS_MAX_NUM 13
+#define SYS_MAX_NUM 15
 
 /* 可以传入的最大字符串长度 */
 #define STR_MAXLEN 127

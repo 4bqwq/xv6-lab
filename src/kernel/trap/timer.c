@@ -45,29 +45,43 @@ void timer_init()
 
 // 全局系统时钟
 static timer_t sys_timer;
+static spinlock_t timer_lk;
 
 // 时钟创建
 void timer_create()
 {
     sys_timer.ticks = 0;
+    spinlock_init(&timer_lk, "timer");
 }
 
 void timer_update(void)
 {
+    spinlock_acquire(&timer_lk);
     sys_timer.ticks++;
+    proc_wakeup(&sys_timer);
+    spinlock_release(&timer_lk);
 }
 
 // 获取滴答数量 (不把sys_timer暴露出去, 只提供安全的访问接口)
 uint64 timer_get_ticks()
 {
-    return sys_timer.ticks;
+    uint64 ticks = 0;
+    spinlock_acquire(&timer_lk);
+    ticks = sys_timer.ticks;
+    spinlock_release(&timer_lk);
+    return ticks;
 }
 
 // 让进程睡眠ntick个时钟周期
 void timer_wait(uint64 ntick)
 {
-    uint64 begin = timer_get_ticks();
-    while (timer_get_ticks() - begin < ntick) {
-        // 简易忙等等待，不做额外调度
+    proc_t *p = myproc();
+    spinlock_acquire(&timer_lk);
+    uint64 target = sys_timer.ticks + ntick;
+    while (sys_timer.ticks < target) {
+        if (p != NULL)
+            printf("proc %d is sleeping!\n", p->pid);
+        proc_sleep(&sys_timer, &timer_lk);
     }
+    spinlock_release(&timer_lk);
 }

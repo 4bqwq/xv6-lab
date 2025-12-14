@@ -549,7 +549,7 @@ static void __attribute__((unused)) proc_try_wakeup(proc_t *p)
     if (p == NULL)
         return;
     spinlock_acquire(&p->lk);
-    if (p->state == SLEEPING)
+    if (p->state == SLEEPING && p->sleep_space == p)
         p->state = RUNNABLE;
     spinlock_release(&p->lk);
 }
@@ -587,9 +587,9 @@ void proc_exit(int exit_code)
 int proc_wait(uint64 user_addr)
 {
     proc_t *cur = myproc();
-    int have_child = 0;
 
     while (1) {
+        int have_child = 0;
         for (int i = 0; i < N_PROC; i++) {
             proc_t *p = &proc_list[i];
             spinlock_acquire(&p->lk);
@@ -611,7 +611,9 @@ int proc_wait(uint64 user_addr)
         if (!have_child)
             return -1;
 
-        proc_yield();
+        spinlock_acquire(&cur->lk);
+        proc_sleep(cur, &cur->lk);
+        spinlock_release(&cur->lk);
     }
 }
 
@@ -621,7 +623,24 @@ int proc_wait(uint64 user_addr)
 */
 void proc_sleep(void *sleep_space, spinlock_t *lock)
 {
+    proc_t *p = myproc();
+    assert(p != NULL, "proc_sleep: no current proc");
+    assert(lock != NULL && spinlock_holding(lock), "proc_sleep: lock not held");
 
+    if (lock != &p->lk) {
+        spinlock_acquire(&p->lk);
+        spinlock_release(lock);
+    }
+
+    p->sleep_space = sleep_space;
+    p->state = SLEEPING;
+    proc_sched();
+
+    p->sleep_space = NULL;
+    if (lock != &p->lk) {
+        spinlock_release(&p->lk);
+        spinlock_acquire(lock);
+    }
 }
 
 /*
@@ -630,7 +649,13 @@ void proc_sleep(void *sleep_space, spinlock_t *lock)
 */
 void proc_wakeup(void *sleep_space)
 {
-
+    for (int i = 0; i < N_PROC; i++) {
+        proc_t *p = &proc_list[i];
+        spinlock_acquire(&p->lk);
+        if (p->state == SLEEPING && p->sleep_space == sleep_space)
+            p->state = RUNNABLE;
+        spinlock_release(&p->lk);
+    }
 }
 
 /* 
@@ -644,7 +669,10 @@ void proc_sched()
     assert(p != NULL, "proc_sched: no current proc");
     assert(spinlock_holding(&p->lk), "proc_sched: need lock");
     assert(intr_get() == 0, "proc_sched: interrupts must be off");
+    c->proc = NULL;
+    spinlock_release(&p->lk);
     swtch(&p->ctx, &c->ctx);
+    // scheduler reacquires p->lk before switching us back in, so the lock remains held
 }
 
 /* 
@@ -666,8 +694,11 @@ void proc_scheduler()
                 c->proc = p;
                 swtch(&c->ctx, &p->ctx);
                 c->proc = NULL;
+                // proc_sched/exit is responsible for releasing the process lock,
+                // so the scheduler does not touch it here.
+            } else {
+                spinlock_release(&p->lk);
             }
-            spinlock_release(&p->lk);
         }
     }
 }

@@ -1,4 +1,5 @@
 #include "mod.h"
+#include "../lock/mod.h"
 
 // 检查页对齐并确保长度落在 mmap 设计范围
 static bool mmap_len_valid(uint64 len)
@@ -251,4 +252,29 @@ uint64 sys_getpid()
 {
     proc_t *p = myproc();
     return (uint64)p->pid;
+}
+
+static sleeplock_t global_slock;
+static bool global_slock_inited = false;
+
+static void __attribute__((unused)) ensure_global_slock()
+{
+    if (!global_slock_inited) {
+        sleeplock_init(&global_slock, "global_slock");
+        global_slock_inited = true;
+    }
+}
+
+uint64 sys_sleeplock_acquire()
+{
+    ensure_global_slock();
+    sleeplock_acquire(&global_slock);
+    return 0;
+}
+
+uint64 sys_sleeplock_release()
+{
+    ensure_global_slock();
+    sleeplock_release(&global_slock);
+    return 0;
 }

@@ -55,10 +55,11 @@ void trap_user_handler(void)
     if (scause & 0x8000000000000000UL) {
         // 1. 中断
         switch (trap_id) {
+        case 1: // S-mode software interrupt (timer via SSIP)
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
             // 用户态被时钟打断，交出CPU让调度器决定下一个运行者
-            if (c->proc != NULL)
+            if (c->proc != NULL && c->proc->state == RUNNING)
                 proc_yield();
             break;
         case 9: // S-mode external interrupt

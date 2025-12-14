@@ -16,6 +16,8 @@ static uint64 (*syscalls[])(void) = {
     [SYS_copyin] sys_copyin,
     [SYS_copyout] sys_copyout,
     [SYS_copyinstr] sys_copyinstr,
+    [SYS_sleeplock_acquire] sys_sleeplock_acquire,
+    [SYS_sleeplock_release] sys_sleeplock_release,
 };
 
 // 基于系统调用表的请求跳转

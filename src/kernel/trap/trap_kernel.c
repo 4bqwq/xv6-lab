@@ -64,6 +64,9 @@ void trap_kernel_inithart()
     // 填写内核态中断处理函数
     w_stvec((uint64)kernel_vector);
 
+    // 打开 S-mode 中断总开关（需要ack S-mode timer中断）
+    w_sie(r_sie() | SIE_SSIE);
+
     // 打开中断
     intr_on();
 }
@@ -88,11 +91,15 @@ void trap_kernel_handler()
         // 1-中断处理
         switch (trap_id) // 中断产生原因分类
         {
+        case 1: // S-mode software interrupt (timer via SSIP)
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
-            // 内核态被时钟抢占，若当前CPU有进程在运行则让出CPU
-            if (mycpu()->proc != NULL)
+            // 内核态被时钟抢占，若当前CPU有正在运行的进程则让出CPU
+            if (mycpu()->proc != NULL && mycpu()->proc->state == RUNNING)
                 proc_yield();
+            break;
+        case 9: // S-mode external interrupt
+            external_interrupt_handler();
             break;
 
         default: // 例外处理

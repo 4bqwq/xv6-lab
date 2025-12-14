@@ -20,3 +20,5 @@ uint64 sys_wait();
 uint64 sys_exit();
 uint64 sys_sleep();
 uint64 sys_getpid();
+uint64 sys_sleeplock_acquire();
+uint64 sys_sleeplock_release();
