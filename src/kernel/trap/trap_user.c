@@ -57,7 +57,9 @@ void trap_user_handler(void)
         switch (trap_id) {
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
-            proc_yield(); // 抢占：用户态时钟中断后交还CPU
+            // 用户态被时钟打断，交出CPU让调度器决定下一个运行者
+            if (c->proc != NULL)
+                proc_yield();
             break;
         case 9: // S-mode external interrupt
             external_interrupt_handler();

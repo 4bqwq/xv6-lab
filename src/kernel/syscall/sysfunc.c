@@ -221,9 +221,7 @@ uint64 sys_print_int()
 
 uint64 sys_fork()
 {
-    int pid = proc_fork();
-    proc_yield();
-    return (uint64)pid;
+    return (uint64)proc_fork();
 }
 
 uint64 sys_wait()

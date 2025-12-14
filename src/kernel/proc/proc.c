@@ -70,6 +70,10 @@ proc_t *proc_alloc()
     for (int i = 0; i < N_PROC; i++) {
         proc_t *p = &proc_list[i];
 
+        // 当前CPU已经持有的进程锁直接跳过，避免再次获取导致自旋锁检测报错
+        if (spinlock_holding(&p->lk))
+            continue;
+
         spinlock_acquire(&p->lk);
         if (p->state != UNUSED) {
             spinlock_release(&p->lk);
@@ -463,10 +467,13 @@ void proc_start_first()
 int proc_fork()
 {
     proc_t *parent = myproc();
+    spinlock_acquire(&parent->lk);
 
     proc_t *child = proc_alloc();
-    if (child == NULL)
+    if (child == NULL) {
+        spinlock_release(&parent->lk);
         return -1;
+    }
 
     // 复制父进程 trapframe，子进程返回值置0
     memmove(child->tf, parent->tf, sizeof(trapframe_t));
@@ -496,8 +503,8 @@ int proc_fork()
 
     // 子进程就绪
     child->state = RUNNABLE;
-    printf("proc %d is running...\n", child->pid);
     spinlock_release(&child->lk);
+    spinlock_release(&parent->lk);
     return child->pid;
 }
 
@@ -511,7 +518,6 @@ void proc_yield()
     spinlock_acquire(&p->lk);
     p->state = RUNNABLE;
     proc_sched();
-    // 返回后进程再次被选中并持有锁
     spinlock_release(&p->lk);
 }
 
@@ -521,7 +527,16 @@ void proc_yield()
 */
 static void __attribute__((unused)) proc_reparent(proc_t *parent)
 {
-
+    for (int i = 0; i < N_PROC; i++) {
+        proc_t *p = &proc_list[i];
+        if (p == parent)
+            continue;
+        spinlock_acquire(&p->lk);
+        if (p->parent == parent) {
+            p->parent = proczero;
+        }
+        spinlock_release(&p->lk);
+    }
 }
 
 /*
@@ -531,7 +546,12 @@ static void __attribute__((unused)) proc_reparent(proc_t *parent)
 */
 static void __attribute__((unused)) proc_try_wakeup(proc_t *p)
 {
-
+    if (p == NULL)
+        return;
+    spinlock_acquire(&p->lk);
+    if (p->state == SLEEPING)
+        p->state = RUNNABLE;
+    spinlock_release(&p->lk);
 }
 
 /*
@@ -540,7 +560,22 @@ static void __attribute__((unused)) proc_try_wakeup(proc_t *p)
 */
 void proc_exit(int exit_code)
 {
+    proc_t *p = myproc();
 
+    // 记录退出状态
+    spinlock_acquire(&p->lk);
+    p->exit_code = exit_code;
+
+    // 处理过继
+    proc_reparent(p);
+
+    // 唤醒父进程
+    proc_try_wakeup(p->parent);
+
+    // 标记为ZOMBIE并切换到调度器，不再返回
+    p->state = ZOMBIE;
+    proc_sched();
+    panic("proc_exit: unreachable");
 }
 
 /*
@@ -551,7 +586,33 @@ void proc_exit(int exit_code)
 */
 int proc_wait(uint64 user_addr)
 {
-    return -1;
+    proc_t *cur = myproc();
+    int have_child = 0;
+
+    while (1) {
+        for (int i = 0; i < N_PROC; i++) {
+            proc_t *p = &proc_list[i];
+            spinlock_acquire(&p->lk);
+            if (p->parent == cur) {
+                have_child = 1;
+                if (p->state == ZOMBIE) {
+                    int code = p->exit_code;
+                    int pid = p->pid;
+                    if (user_addr != 0)
+                        uvm_copyout(cur->pgtbl, user_addr, (uint64)&code, sizeof(int));
+                    proc_free(p);
+                    spinlock_release(&p->lk);
+                    return pid;
+                }
+            }
+            spinlock_release(&p->lk);
+        }
+
+        if (!have_child)
+            return -1;
+
+        proc_yield();
+    }
 }
 
 /*
@@ -583,11 +644,7 @@ void proc_sched()
     assert(p != NULL, "proc_sched: no current proc");
     assert(spinlock_holding(&p->lk), "proc_sched: need lock");
     assert(intr_get() == 0, "proc_sched: interrupts must be off");
-
-    p->state = RUNNABLE;
-    c->proc = NULL;
     swtch(&p->ctx, &c->ctx);
-    c->proc = p;
 }
 
 /* 
@@ -603,13 +660,10 @@ void proc_scheduler()
         intr_on();
         for (int i = 0; i < N_PROC; i++) {
             proc_t *p = &proc_list[i];
-            if (p->lk.locked && p->lk.cpuid == mycpuid())
-                spinlock_release(&p->lk);
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
                 p->state = RUNNING;
                 c->proc = p;
-                printf("proc %d is running...\n", p->pid);
                 swtch(&c->ctx, &p->ctx);
                 c->proc = NULL;
             }

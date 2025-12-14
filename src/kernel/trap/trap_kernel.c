@@ -90,7 +90,8 @@ void trap_kernel_handler()
         {
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
-            if (myproc())
+            // 内核态被时钟抢占，若当前CPU有进程在运行则让出CPU
+            if (mycpu()->proc != NULL)
                 proc_yield();
             break;
 
