@@ -2,12 +2,15 @@
 #include "../lib/mod.h"
 #include "type.h"
 #include "mod.h"
+#include "../fs/type.h"
 
 // PLIC初始化
 void plic_init()
 {
     // 设置UART中断优先级
     *(uint32 *)(PLIC_PRIORITY(UART_IRQ)) = 1;
+    // 设置磁盘(virtio)中断优先级
+    *(uint32 *)(PLIC_PRIORITY(VIRTIO_IRQ)) = 1;
 }
 
 // PLIC核心初始化
@@ -15,7 +18,7 @@ void plic_inithart()
 {
     int hartid = mycpuid();
     // 使能中断开关
-    *(uint32 *)PLIC_SENABLE(hartid) = (1 << UART_IRQ);
+    *(uint32 *)PLIC_SENABLE(hartid) = (1 << UART_IRQ) | (1 << VIRTIO_IRQ);
     // 设置响应阈值
     *(uint32 *)PLIC_SPRIORITY(hartid) = 0;
 }
@@ -34,3 +37,4 @@ void plic_complete(int irq)
     int hartid = mycpuid();
     *(uint32 *)PLIC_SCLAIM(hartid) = irq;
 }
+

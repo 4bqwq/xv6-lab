@@ -1,6 +1,6 @@
 #include "mod.h"
 #include "../lock/mod.h"
-
+#include "../fs/method.h"
 // 检查页对齐并确保长度落在 mmap 设计范围
 static bool mmap_len_valid(uint64 len)
 {
@@ -17,14 +17,14 @@ static bool mmap_start_valid(uint64 start)
 
 uint64 sys_helloworld()
 {
-    printf("proczero: hello world!\n");
+    printf("hello world!\n");
     return 0;
 }
 
 /*
-    测试: 从用户空间传入一个int类型的数组
+    测试: 向用户空间传入一个int类型的数组
     uint64 addr 数组起始地址
-    uint32 len  元素数量
+    uint32 len  数组元素数量
     成功返回0
 */
 uint64 sys_copyin()
@@ -82,23 +82,25 @@ uint64 sys_copyinstr()
 {
     proc_t *p = myproc();
 
-    uint64 uaddr;  // 用户字符串起始地址
+    uint64 uaddr;
     arg_uint64(0, &uaddr);
 
     char buf[STR_MAXLEN + 1];
     memset(buf, 0, sizeof(buf));
-
     uvm_copyin_str(p->pgtbl, (uint64)buf, uaddr, STR_MAXLEN);
 
-    printf("get string for user: %s\n", buf);
-
+    printf("sys_copyinstr: %s\n", buf);
     return 0;
 }
 
 /*
-    用户堆空间伸缩
-    uint64 new_heap_top (如果是0, 代表查询当前堆顶位置)
-    成功返回new_heap_top, 失败返回-1
+    brk
+    调整进程的 heap_top (堆边界)
+    参数:
+        uint64 new_brk: 新的堆顶(用户虚拟地址)
+    返回:
+        成功: old_brk (原堆顶)
+        失败: -1
 */
 uint64 sys_brk()
 {
@@ -113,44 +115,30 @@ uint64 sys_brk()
     }
 
     uint64 old_heap_top = p->heap_top;
-    uint64 result = (uint64)-1;
 
     if (new_heap_top > old_heap_top) {
-        // 扩展堆
         uint32 len = (uint32)(new_heap_top - old_heap_top);
-
         uint64 grown_top = uvm_heap_grow(p->pgtbl, old_heap_top, len);
-        if (grown_top == (uint64)-1)
-            return (uint64)-1;
+        if (grown_top == (uint64)-1) return (uint64)-1;
         p->heap_top = grown_top;
-        result = grown_top;
-    } else if (new_heap_top < old_heap_top) {
-        // 收缩堆
-        uint32 len = (uint32)(old_heap_top - new_heap_top);
-
-        uint64 shrunk_top = uvm_heap_ungrow(p->pgtbl, old_heap_top, len);
-        if (shrunk_top == (uint64)-1)
-            return (uint64)-1;
-        p->heap_top = shrunk_top;
-        result = shrunk_top;
-    } else {
-        // new_heap_top == old_heap_top
-        result = old_heap_top;
+        return grown_top;
     }
 
-    return result;
+    if (new_heap_top < old_heap_top) {
+        uint32 len = (uint32)(old_heap_top - new_heap_top);
+        uint64 shrunk_top = uvm_heap_ungrow(p->pgtbl, old_heap_top, len);
+        if (shrunk_top == (uint64)-1) return (uint64)-1;
+        p->heap_top = shrunk_top;
+        return shrunk_top;
+    }
+
+    return old_heap_top;
 }
 
-/*
-    增加一段内存映射
-    uint64 start 起始地址
-    uint32 len   范围 (字节,需检查是否是page-aligned)
-    成功返回映射空间的起始地址, 失败返回-1
-*/
+
 uint64 sys_mmap()
 {
-    uint64 start;
-    uint64 len;
+    uint64 start, len;
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
@@ -161,42 +149,36 @@ uint64 sys_mmap()
         return (uint64)-1;
 
     uint32 npages = (uint32)(len / PGSIZE);
-    // uvm_mmap 负责分配物理页并调用 vm_mappages 建立映射
-    uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
-    if (mapped == 0)
-        return (uint64)-1;
 
+    // uvm_mmap 负责分配物理页并建立映射
+    uint64 mapped = uvm_mmap(start, npages, PTE_R | PTE_W);
     return mapped;
 }
 
-/*
-    解除一段内存映射
-    uint64 start 起始地址
-    uint32 len   范围 (字节, 需检查是否是page-aligned)
-    成功返回0 失败返回-1
-*/
+
 uint64 sys_munmap()
 {
-    uint64 start;
-    uint64 len;
+    uint64 start, len;
     arg_uint64(0, &start);
     arg_uint64(1, &len);
 
-    if (!mmap_len_valid(len) || start == 0 || (start % PGSIZE) != 0)
+    if (!mmap_len_valid(len) || !mmap_start_valid(start))
         return (uint64)-1;
 
+    if (start == 0)
+        return (uint64)-1;
     if (start < MMAP_BEGIN || start >= MMAP_END)
         return (uint64)-1;
     if (len > MMAP_END - start)
         return (uint64)-1;
 
     uint32 npages = (uint32)(len / PGSIZE);
-    // uvm_munmap 会在页表里逐段卸载映射并回收节点
     if (!uvm_munmap(start, npages))
         return (uint64)-1;
 
     return 0;
 }
+
 
 uint64 sys_print_str()
 {
@@ -214,30 +196,30 @@ uint64 sys_print_str()
 
 uint64 sys_print_int()
 {
-    uint32 num = 0;
-    arg_uint32(0, &num);
-    printf("num = %d\n", (int)num);
+    uint32 x = 0;
+    arg_uint32(0, &x);
+    printf("%d", x);
     return 0;
 }
 
 uint64 sys_fork()
 {
-    return (uint64)proc_fork();
+    return proc_fork();
 }
 
 uint64 sys_wait()
 {
-    uint64 addr = 0;
-    arg_uint64(0, &addr);
-    return (uint64)proc_wait(addr);
+    uint64 uaddr = 0;
+    arg_uint64(0, &uaddr);
+    return (uint64)proc_wait(uaddr);
 }
 
 uint64 sys_exit()
 {
-    int code = 0;
-    arg_uint32(0, (uint32 *)&code);
-    proc_exit(code);
-    return 0;
+    uint32 code = 0;
+    arg_uint32(0, &code);
+    proc_exit((int)code);
+    return 0; // 不会到这
 }
 
 uint64 sys_sleep()
@@ -278,3 +260,123 @@ uint64 sys_sleeplock_release()
     sleeplock_release(&global_slock);
     return 0;
 }
+
+/* ============================================================
+   Lab7: 文件系统/磁盘管理 相关测试系统调用 (SYS_alloc_block ~ SYS_flush_buffer)
+   注意：这些系统调用是“教学用的调试口”，会把内核指针直接返回给用户态。
+   ============================================================ */
+
+// 从 data bitmap 申请一个 block，返回 block 号
+uint64 sys_alloc_block()
+{
+    return (uint64)bitmap_alloc_block();
+}
+
+// 释放一个 data block
+uint64 sys_free_block()
+{
+    uint32 block_num = 0;
+    arg_uint32(0, &block_num);
+    bitmap_free_block(block_num);
+    return 0;
+}
+
+// 从 inode bitmap 申请一个 inode，返回 inode 号
+uint64 sys_alloc_inode()
+{
+    return (uint64)bitmap_alloc_inode();
+}
+
+// 释放一个 inode
+uint64 sys_free_inode()
+{
+    uint32 inode_num = 0;
+    arg_uint32(0, &inode_num);
+    bitmap_free_inode(inode_num);
+    return 0;
+}
+
+// 输出 bitmap 状态：arg0=0 打印 data bitmap；arg0=1 打印 inode bitmap
+uint64 sys_show_bitmap()
+{
+    uint32 which = 0;
+    arg_uint32(0, &which);
+    // method.h: bitmap_print(true) => data bitmap
+    bitmap_print(which == 0);
+    return 0;
+}
+
+// 获取一个描述 block 的 buffer，返回 buffer_t* (以 uint64 形式返回给用户态)
+uint64 sys_get_block()
+{
+    uint32 block_num = 0;
+    arg_uint32(0, &block_num);
+
+    buffer_t *b = buffer_get(block_num);
+    return (uint64)b;
+}
+
+// 将 buf->data 拷贝到用户空间：arg0=buffer_t*，arg1=用户地址
+uint64 sys_read_block()
+{
+    proc_t *p = myproc();
+
+    uint64 baddr = 0;
+    uint64 uaddr = 0;
+    arg_uint64(0, &baddr);
+    arg_uint64(1, &uaddr);
+
+    buffer_t *b = (buffer_t *)baddr;
+    if (b == NULL || b->data == NULL) return (uint64)-1;
+
+    uvm_copyout(p->pgtbl, uaddr, (uint64)b->data, BLOCK_SIZE);
+    return 0;
+}
+
+// 基于用户地址空间更新 buffer->data 并写入磁盘：arg0=buffer_t*，arg1=用户地址
+uint64 sys_write_block()
+{
+    proc_t *p = myproc();
+
+    uint64 baddr = 0;
+    uint64 uaddr = 0;
+    arg_uint64(0, &baddr);
+    arg_uint64(1, &uaddr);
+
+    buffer_t *b = (buffer_t *)baddr;
+    if (b == NULL || b->data == NULL) return (uint64)-1;
+
+    uvm_copyin(p->pgtbl, (uint64)b->data, uaddr, BLOCK_SIZE);
+    buffer_write(b);
+    return 0;
+}
+
+// 释放一个描述 block 的 buffer：arg0=buffer_t*
+uint64 sys_put_block()
+{
+    uint64 baddr = 0;
+    arg_uint64(0, &baddr);
+
+    buffer_t *b = (buffer_t *)baddr;
+    if (b == NULL) return (uint64)-1;
+
+    buffer_put(b);
+    return 0;
+}
+
+// 输出 buffer 链表状态
+uint64 sys_show_buffer()
+{
+    buffer_print_info();
+    return 0;
+}
+
+// 释放非活跃链表中 buffer 持有的物理内存资源：arg0=要释放的 buffer 数量上限
+// 返回实际释放的 buffer 数量
+uint64 sys_flush_buffer()
+{
+    uint32 n = 0;
+    arg_uint32(0, &n);
+    return (uint64)buffer_freemem(n);
+}
+

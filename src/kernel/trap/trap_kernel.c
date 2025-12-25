@@ -1,5 +1,6 @@
 #include "mod.h"
 #include "../proc/mod.h"
+#include "../fs/type.h"
 
 // 中断信息
 char *interrupt_info[16] = {
@@ -44,6 +45,11 @@ char *exception_info[16] = {
 // 实现位于 trap.S
 // 它是完整的内核态trap处理流程
 extern void kernel_vector();
+
+// in lib/uart.c
+extern void uart_intr();
+// in fs/virtio.c
+extern void virtio_disk_intr();
 
 // 初始化trap中各个核心共享的东西
 void trap_kernel_init()
@@ -123,7 +129,19 @@ void trap_kernel_handler()
 // 外设中断处理 (基于PLIC，lab-3只需要识别和处理UART中断)
 void external_interrupt_handler()
 {
+    int irq = plic_claim();
+    if (irq == 0)
+        return;
 
+    if (irq == UART_IRQ) {
+        uart_intr();
+    } else if (irq == VIRTIO_IRQ) {
+        virtio_disk_intr();
+    } else {
+        printf("unexpected external interrupt: irq=%d\n", irq);
+    }
+
+    plic_complete(irq);
 }
 
 // 时钟中断处理 (基于CLINT)
@@ -138,3 +156,4 @@ void timer_interrupt_handler()
     // 在 trap.S 里面有对应的两条命令, 去找找
     w_sip(r_sip() & ~2);
 }
+

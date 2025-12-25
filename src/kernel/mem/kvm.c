@@ -1,5 +1,6 @@
 #include "mod.h"
 #include "../proc/type.h"
+#include "../fs/type.h"
 
 //================= 链接脚本符号（按你的 kernel.ld 名字有差异就改） =================
 extern char KERNEL_START[];   // 内核镜像起始
@@ -17,6 +18,12 @@ static pgtbl_t kernel_pgtbl;
 //================= 页表走访：返回叶子 PTE 指针 ====================================
 pte_t *vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc)
 {
+    // virtio_disk_rw 会传入 NULL，表示使用内核页表
+    if (pgtbl == NULL) {
+        assert(kernel_pgtbl != NULL, "vm_getpte: kernel_pgtbl not initialized");
+        pgtbl = kernel_pgtbl;
+    }
+
     if (va >= VA_MAX) return NULL;
 
     pgtbl_t cur = pgtbl;
@@ -91,6 +98,10 @@ static void map_kernel_and_io(pgtbl_t pt)
 #endif
 #ifdef PLIC_BASE
     vm_mappages(pt, (uint64)PLIC_BASE,  (uint64)PLIC_BASE,  0x400000, PTE_R|PTE_W);
+#endif
+#ifdef VIRTIO_BASE
+    // virtio 磁盘 MMIO 寄存器（1页即可覆盖常用寄存器区）
+    vm_mappages(pt, (uint64)VIRTIO_BASE, (uint64)VIRTIO_BASE, PGSIZE, PTE_R|PTE_W);
 #endif
 
     // 内核镜像：整段 RWX（教学简化；若有 etext 可把 text 单独 RX）
@@ -180,3 +191,4 @@ void vm_print(pgtbl_t pgtbl)
         }
     }
 }
+

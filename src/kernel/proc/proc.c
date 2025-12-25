@@ -1,5 +1,5 @@
 #include "mod.h"
-
+#include "../fs/method.h"
 // 这个文件通过make build生成, 是proczero对应的ELF文件
 #include "../../user/initcode.h"
 #define initcode     target_user_initcode
@@ -26,6 +26,9 @@ static proc_t *proczero;
 static int global_pid;
 static spinlock_t pid_lk;
 
+static spinlock_t fsinit_lk;
+static int fs_inited = 0;
+
 /* 获取一个pid */
 static int __attribute__((unused)) alloc_pid()
 {
@@ -43,6 +46,20 @@ static void __attribute__((unused)) proc_return()
     proc_t *p = myproc();
     assert(p != NULL, "proc_return: no current proc");
     spinlock_release(&p->lk);
+    // 只允许 proczero 第一次进入 proc_return 时初始化文件系统
+    if (myproc() == proczero) {
+    	spinlock_acquire(&fsinit_lk);
+    if (!fs_inited) {
+        fs_inited = 1;
+        spinlock_release(&fsinit_lk);
+
+        fs_init();
+        sb_print();
+    } else {
+        spinlock_release(&fsinit_lk);
+    }
+}
+ 
     trap_user_return();
 }
 
@@ -59,6 +76,7 @@ void proc_init()
     proczero = NULL;
     global_pid = 1;
     spinlock_init(&pid_lk, "pid");
+    spinlock_init(&fsinit_lk, "fsinit");
 }
 
 /* 
