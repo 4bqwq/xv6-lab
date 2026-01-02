@@ -143,6 +143,8 @@ void trap_user_return(void)
     // 将后续来自用户态的 trap 入口设置为 trampoline.S 里的 user_vector
     uint64 uservec = TRAMPOLINE + ((uint64)user_vector - (uint64)trampoline);
     w_stvec(uservec);
+    // user_vector 通过 sscratch 获取 trapframe 地址
+    w_sscratch(TRAPFRAME);
 
     // 填写 trapframe 里“回到内核”时需要用到的几个字段
     tf->user_to_kern_satp       = r_satp();                 // 当前内核页表

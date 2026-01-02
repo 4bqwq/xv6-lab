@@ -33,8 +33,6 @@ void sleeplock_acquire(sleeplock_t *lk)
             lk->locked = 1;
             proc_t *p = myproc();
             lk->pid = (p != NULL) ? p->pid : -1;
-            if (p != NULL)
-                printf("sleeplock: pid %d acquired\n", p->pid);
             spinlock_release(&lk->lock);
             break;
         }
@@ -48,9 +46,6 @@ void sleeplock_release(sleeplock_t *lk)
     spinlock_acquire(&lk->lock);
     lk->locked = 0;
     lk->pid = -1;
-    proc_t *p = myproc();
-    if (p != NULL)
-        printf("sleeplock: pid %d released\n", p->pid);
     proc_wakeup(lk);
     spinlock_release(&lk->lock);
 }
