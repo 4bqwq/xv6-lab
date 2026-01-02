@@ -48,142 +48,142 @@ static void insert_node(buffer_node_t *node, bool insert_active, bool insert_nex
 */
 void buffer_init()
 {
-	spinlock_init(&lk_buf_cache, "buf_cache");
+    // 初始化全局的lk_buf_cache + buf_head_active + buf_head_inactive
+    spinlock_init(&lk_buf_cache, "buf_cache");
 
-	// 初始化两个带头节点的双向循环链表
-	buf_head_active.next = &buf_head_active;
-	buf_head_active.prev = &buf_head_active;
-	buf_head_inactive.next = &buf_head_inactive;
-	buf_head_inactive.prev = &buf_head_inactive;
+    // 初始化两个带头节点的双向循环链表
+    buf_head_active.next = &buf_head_active;
+    buf_head_active.prev = &buf_head_active;
+    buf_head_inactive.next = &buf_head_inactive;
+    buf_head_inactive.prev = &buf_head_inactive;
 
-	// 初始化所有 buffer，并放入不活跃链表。
-	// 目标：buf_cache[0] 最终位于 buf_head_inactive.next
-	for (int i = (int)N_BUFFER - 1; i >= 0; i--) {
-		buffer_node_t *node = &buf_cache[i];
-		node->next = NULL;
-		node->prev = NULL;
+    // 初始化buf_cache中的所有node, 并将他们放在不活跃链表中
+    for (int i = 0; i < N_BUFFER; i++)
+    {
+        buffer_node_t *node = &buf_cache[i];
 
-		node->buf.block_num = BLOCK_NUM_UNUSED;
-		node->buf.ref = 0;
-		node->buf.data = NULL;
-		node->buf.disk = false;
-		sleeplock_init(&node->buf.slk, "buffer");
+        node->next = buf_head_inactive.next;
+        node->prev = &buf_head_inactive;
+        buf_head_inactive.next->prev = node;
+        buf_head_inactive.next = node;
 
-		insert_node(node, false, true);
-	}
+        node->buf.block_num = BLOCK_NUM_UNUSED;
+        node->buf.ref = 0;
+        node->buf.data = NULL;
+        node->buf.disk = false;
+        sleeplock_init(&node->buf.slk, "buffer");
+    }
 }
 
 /* 磁盘读取: block -> buf */
 static void buffer_read(buffer_t *buf)
 {
-	assert(buf != NULL, "buffer_read: null");
-	assert(buf->data != NULL, "buffer_read: data is null");
-	assert(buf->block_num != BLOCK_NUM_UNUSED, "buffer_read: invalid block");
-	assert(sleeplock_holding(&buf->slk), "buffer_read: slk not held");
-
-	virtio_disk_rw(buf, false);
+    virtio_disk_rw(buf, false);
 }
 
 /* 磁盘写入: buf -> block */
 void buffer_write(buffer_t *buf)
 {
-	assert(buf != NULL, "buffer_write: null");
-	assert(buf->data != NULL, "buffer_write: data is null");
-	assert(buf->block_num != BLOCK_NUM_UNUSED, "buffer_write: invalid block");
-	assert(sleeplock_holding(&buf->slk), "buffer_write: slk not held");
-
-	virtio_disk_rw(buf, true);
+    virtio_disk_rw(buf, true);
 }
 
 /* 从buf_cache中获取一个buf */
 buffer_t* buffer_get(uint32 block_num)
 {
-	buffer_node_t *node;
-	bool need_read = false;
+    buffer_node_t *node = NULL, *target = NULL;
+    bool need_read = false;
 
-	spinlock_acquire(&lk_buf_cache);
+    spinlock_acquire(&lk_buf_cache);
 
-	// 1) 先在活跃链表中寻找
-	for (node = buf_head_active.next; node != &buf_head_active; node = node->next) {
-		if (node->buf.block_num == block_num) {
-			node->buf.ref++;
-			insert_node(node, true, true); // move to most-active position
-			spinlock_release(&lk_buf_cache);
-			sleeplock_acquire(&node->buf.slk);
-			return &node->buf;
-		}
-	}
+    // 在活跃链表中寻找
+    for (node = buf_head_active.next; node != &buf_head_active; node = node->next) {
+        if (node->buf.block_num == block_num) {
+            target = node;
+            insert_node(target, true, true);
+            target->buf.ref++;
+            need_read = !target->buf.disk;
+            break;
+        }
+    }
 
-	// 2) 再在不活跃链表中寻找
-	for (node = buf_head_inactive.next; node != &buf_head_inactive; node = node->next) {
-		if (node->buf.block_num == block_num) {
-			node->buf.ref++;
-			// 从不活跃 -> 活跃，移动到最活跃位置
-			insert_node(node, true, true);
+    // 在不活跃链表中寻找
+    if (target == NULL) {
+        for (node = buf_head_inactive.next; node != &buf_head_inactive; node = node->next) {
+            if (node->buf.block_num == block_num) {
+                target = node;
+                insert_node(target, true, true);
+                target->buf.ref++;
+                need_read = !target->buf.disk;
+                break;
+            }
+        }
+    }
 
-			// 自动申请物理内存（只在从不活跃链表取出时做）
-			if (node->buf.data == NULL) {
-				node->buf.data = (uint8 *)pmem_alloc(true);
-				assert(node->buf.data != NULL, "buffer_get: no mem for buffer page");
-				memset(node->buf.data, 0, BLOCK_SIZE);
-				need_read = true;
-			}
-			spinlock_release(&lk_buf_cache);
+    // 如果没找到，将最不活跃的不活跃节点移动到活跃链表尾部
+    if (target == NULL) {
+        target = buf_head_inactive.prev;
+        insert_node(target, true, false);
 
-			sleeplock_acquire(&node->buf.slk);
-			if (need_read)
-				buffer_read(&node->buf);
-			return &node->buf;
-		}
-	}
+        target->buf.block_num = block_num;
+        target->buf.ref = 1;
+        target->buf.disk = false;
+        need_read = true;
+    }
 
-	// 3) 缓存失败：挑选系统中最不活跃的 buffer（不活跃链表尾部）
-	node = buf_head_inactive.prev;
-	assert(node != &buf_head_inactive, "buffer_get: no free buffer");
+    // 物理内存
+    if (target->buf.data == NULL) {
+        target->buf.data = (uint8 *)pmem_alloc(true);
+        memset(target->buf.data, 0, BLOCK_SIZE);
+    }
 
-	// 复用该 buffer
-	node->buf.block_num = block_num;
-	node->buf.ref = 1;
-	node->buf.disk = false;
+    // 释放自旋锁，获取睡眠锁
+    spinlock_release(&lk_buf_cache);
+    sleeplock_acquire(&target->buf.slk);
 
-	// miss 时插入活跃链表的尾部（最不活跃）
-	insert_node(node, true, false);
+    //  miss（来自不活跃链表）读盘
+    if (need_read) {
+        buffer_read(&target->buf);
+        target->buf.disk = true;
+    }
 
-	if (node->buf.data == NULL) {
-		node->buf.data = (uint8 *)pmem_alloc(true);
-		assert(node->buf.data != NULL, "buffer_get: no mem for buffer page");
-		memset(node->buf.data, 0, BLOCK_SIZE);
-	}
-	need_read = true;
+    return &target->buf;
+}
 
-	spinlock_release(&lk_buf_cache);
+// 检查指针是否合法
+bool is_valid_buffer(buffer_t *b) {
+    if (b == NULL) return false;
+    uint64 start = (uint64)&buf_cache[0];
+    uint64 end = (uint64)&buf_cache[N_BUFFER];
 
-	// 上锁 + 读盘
-	sleeplock_acquire(&node->buf.slk);
-	if (need_read)
-		buffer_read(&node->buf);
-	return &node->buf;
+    uint64 ptr = (uint64)b;
+
+    // 检查是否在地址范围内
+    if (ptr < start || ptr >= end) return false;
+
+    // 检查是否对齐
+    if ((ptr - start) % sizeof(buffer_node_t) != 0) return false;
+
+    return true;
 }
 
 /* 向buf_cache归还一个buf */
 void buffer_put(buffer_t *buf)
 {
-	assert(buf != NULL, "buffer_put: null");
-	assert(sleeplock_holding(&buf->slk), "buffer_put: slk not held");
+    buffer_node_t *target = (buffer_node_t *)buf;
 
-	// 先放开睡眠锁，避免与 lk_buf_cache 的锁顺序形成死锁
-	sleeplock_release(&buf->slk);
+    sleeplock_release(&buf->slk);
 
-	buffer_node_t *node = (buffer_node_t *)buf;
+    spinlock_acquire(&lk_buf_cache);
 
-	spinlock_acquire(&lk_buf_cache);
-	assert(buf->ref > 0, "buffer_put: ref underflow");
-	buf->ref--;
-	if (buf->ref == 0) {
-		// 回到不活跃链表的最活跃位置
-		insert_node(node, false, true);
-	}
-	spinlock_release(&lk_buf_cache);
+    if (buf->ref > 0) {
+        buf->ref--;
+
+        // 如果引用为0，放到不活跃链表头部
+        if (buf->ref == 0) {
+            insert_node(target, false, true);
+        }
+    }
+    spinlock_release(&lk_buf_cache);
 }
 
 /*
@@ -192,61 +192,57 @@ void buffer_put(buffer_t *buf)
 */
 uint32 buffer_freemem(uint32 buffer_count)
 {
-	uint32 freed = 0;
-	buffer_node_t *node;
+    uint32 freed = 0;
+    buffer_node_t *node = NULL;
 
-	spinlock_acquire(&lk_buf_cache);
+    spinlock_acquire(&lk_buf_cache);
 
-	// 从不活跃链表尾部开始（最不活跃）向前扫描
-	for (node = buf_head_inactive.prev;
-	     node != &buf_head_inactive && freed < buffer_count;
-	     node = node->prev) {
+    // 从后向前遍历非活跃链表
+    for (node = buf_head_inactive.prev;
+        node != &buf_head_inactive && freed < buffer_count;
+        node = node->prev) {
 
-		buffer_t *b = &node->buf;
-		if (b->data == NULL)
-			continue;
-		assert(b->ref == 0, "buffer_freemem: nonzero ref in inactive list");
+        buffer_t *b = &node->buf;
 
-		// 不活跃 buffer 理论上没人持有 slk；这里拿一下，保证 data 的一致性
-		sleeplock_acquire(&b->slk);
-		if (b->data != NULL) {
-			pmem_free((uint64)b->data, true);
-			b->data = NULL;
-			b->disk = false;
-			freed++;
-		}
-		sleeplock_release(&b->slk);
-	}
+        // 申请过物理页，且没人持有过，才能释放
+        if (b->ref == 0 && b->data != NULL) {
+            pmem_free((uint64)b->data, true);
+            b->data = NULL;
+            
+            b->block_num = BLOCK_NUM_UNUSED; 
+            b->disk = false;
 
-	spinlock_release(&lk_buf_cache);
-	return freed;
+            freed++;
+        }
+    }
+
+    spinlock_release(&lk_buf_cache);
+    return freed;
 }
-
 /* 输出buffer_cache的信息 (for test) */
 void buffer_print_info()
 {
-	buffer_node_t *node;
+    buffer_node_t *node;
 
 	assert(N_BUFFER == N_BUFFER_TEST, "buffer_print_info: invalid N_BUFFER");
 
-	spinlock_acquire(&lk_buf_cache);
+    spinlock_acquire(&lk_buf_cache);
 
-	printf("buffer_cache information:\n");
-	
-	printf("1.active list:\n");
-	for (node = buf_head_active.next; node != &buf_head_active; node = node->next) {
-		printf("buffer %d(ref = %d): page(pa = %p) -> block[%d]\n",
-			(int)(node - buf_cache), node->buf.ref, (uint64)node->buf.data, node->buf.block_num);
-	}
-	printf("over!\n");
+    printf("buffer_cache information:\n");
+    
+    printf("1.active list:\n");
+    for (node = buf_head_active.next; node != &buf_head_active; node = node->next) {
+        printf("buffer %d(ref = %d): page(pa = %p) -> block[%d]\n",
+            (int)(node - buf_cache), node->buf.ref, node->buf.data, node->buf.block_num);
+    }
+    printf("over!\n");
 
-	printf("2.inactive list:\n");
-	for (node = buf_head_inactive.next; node != &buf_head_inactive; node = node->next) {
-		printf("buffer %d(ref = %d): page(pa = %p) -> block[%d]\n",
-			(int)(node - buf_cache), node->buf.ref, (uint64)node->buf.data, node->buf.block_num);
-	}
-	printf("over!\n");
+    printf("2.inactive list:\n");
+    for (node = buf_head_inactive.next; node != &buf_head_inactive; node = node->next) {
+        printf("buffer %d(ref = %d): page(pa = %p) -> block[%d]\n",
+            (int)(node - buf_cache), node->buf.ref, node->buf.data, node->buf.block_num);
+    }
+    printf("over!\n");
 
-	spinlock_release(&lk_buf_cache);
+    spinlock_release(&lk_buf_cache);
 }
-

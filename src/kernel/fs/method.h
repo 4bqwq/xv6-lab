@@ -12,6 +12,7 @@ void virtio_disk_intr();
 
 void buffer_init();
 buffer_t* buffer_get(uint32 block_num);
+bool is_valid_buffer(buffer_t *b);
 void buffer_put(buffer_t *buf);
 void buffer_write(buffer_t *buf);
 uint32 buffer_freemem(uint32 buffer_count);

@@ -352,13 +352,16 @@ uint64 sys_write_block()
 }
 
 // 释放一个描述 block 的 buffer：arg0=buffer_t*
-uint64 sys_put_block()
-{
-    uint64 baddr = 0;
-    arg_uint64(0, &baddr);
+uint64 sys_put_block() {
+    uint64 ptr; 
+    arg_uint64(0, &ptr);
 
-    buffer_t *b = (buffer_t *)baddr;
-    if (b == NULL) return (uint64)-1;
+    buffer_t *b = (buffer_t *)ptr;
+
+    if (!is_valid_buffer(b)) {
+        printf("sys_put_block: invalid pointer %p from user\n", b);
+        return (uint64)-1; // 非法操作
+    }
 
     buffer_put(b);
     return 0;

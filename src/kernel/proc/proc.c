@@ -46,19 +46,39 @@ static void __attribute__((unused)) proc_return()
     proc_t *p = myproc();
     assert(p != NULL, "proc_return: no current proc");
     spinlock_release(&p->lk);
+    
     // 只允许 proczero 第一次进入 proc_return 时初始化文件系统
     if (myproc() == proczero) {
-    	spinlock_acquire(&fsinit_lk);
-    if (!fs_inited) {
-        fs_inited = 1;
-        spinlock_release(&fsinit_lk);
+        spinlock_acquire(&fsinit_lk);
+        
+        if (fs_inited == 0) {
+            // 当前 CPU 抢到了初始化权
+            fs_inited = 1; // 标记为：正在初始化
+            spinlock_release(&fsinit_lk);
 
-        fs_init();
-        sb_print();
-    } else {
-        spinlock_release(&fsinit_lk);
+            // 在无锁状态下安全执行耗时操作
+            fs_init();
+            sb_print();
+
+            // 执行完毕，标记为完成
+            spinlock_acquire(&fsinit_lk);
+            fs_inited = 2; // 标记为：初始化完成
+            spinlock_release(&fsinit_lk);
+        } 
+        else if (fs_inited == 1) {
+            while (fs_inited != 2) {
+                spinlock_release(&fsinit_lk);
+                // 稍微松手一会，避免死锁
+                for(int i=0; i<100; i++); 
+                spinlock_acquire(&fsinit_lk);
+            }
+            spinlock_release(&fsinit_lk);
+        } 
+        else {
+            // fs_inited == 2，直接通过
+            spinlock_release(&fsinit_lk);
+        }
     }
-}
  
     trap_user_return();
 }
@@ -124,11 +144,7 @@ proc_t *proc_alloc()
         memset(p->tf, 0, PGSIZE);
         p->pgtbl = proc_pgtbl_init((uint64)p->tf);
 
-        // 将同一物理页的内核栈映射到用户页表，U 位置零，便于陷阱入口在切换 satp 前切到内核栈
-        pte = vm_getpte(kroot, p->kstack, false);
-        assert(pte && (*pte & PTE_V) && !PTE_CHECK(*pte), "proc_alloc: kstack pte missing");
-        uint64 kpa = (uint64)PTE_TO_PA(*pte);
-        vm_mappages(p->pgtbl, p->kstack, kpa, PGSIZE, PTE_R | PTE_W);
+        // 用户页表不映射内核栈，避免与用户栈扩展区域冲突
 
         // 进程上下文把 sp 放到内核栈顶，ra 跳到 proc_return
         memset(&p->ctx, 0, sizeof(p->ctx));
@@ -430,17 +446,18 @@ void proc_make_first()
                 PGSIZE, PTE_R | PTE_W | PTE_X | PTE_U);
 
     // ---------- 5. 分配并映射用户栈页 ----------
-    // 栈放在 TRAPFRAME 下方一页
-    const uint64 ustack_va = TRAPFRAME - PGSIZE;
+    // 预留 3 页栈空间，并将 sp 放在中间页顶部，避免大对象触碰 trapframe
+    const uint64 ustack_pages = 8;
+    const uint64 ustack_base = TRAPFRAME - ustack_pages * PGSIZE;
 
-    void *ustack_pa = pmem_alloc(false);
-    assert(ustack_pa != NULL, "proc_make_first: no mem for user stack");
-    memset(ustack_pa, 0, PGSIZE);
-
-    // 用户栈：R/W + U
-    vm_mappages(p->pgtbl, ustack_va, (uint64)ustack_pa,
-                PGSIZE, PTE_R | PTE_W | PTE_U);
-    p->ustack_npage = 1;
+    for (uint64 i = 0; i < ustack_pages; i++) {
+        void *ustack_pa = pmem_alloc(false);
+        assert(ustack_pa != NULL, "proc_make_first: no mem for user stack");
+        memset(ustack_pa, 0, PGSIZE);
+        vm_mappages(p->pgtbl, ustack_base + i * PGSIZE, (uint64)ustack_pa,
+                    PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+    p->ustack_npage = ustack_pages;
 
     // ---------- 6. 初始化 heap_top ----------
     // 暂时让 heap_top 指向 code+data 之后，后续 lab 实现 brk/sbrk 时会用到
@@ -448,7 +465,7 @@ void proc_make_first()
 
     // ---------- 7. 初始化用户态寄存器 ----------
     // 用户栈指针：指向栈顶
-    p->tf->sp = ustack_va + PGSIZE;
+    p->tf->sp = TRAPFRAME - 4 * PGSIZE;
     // “用户程序入口 PC” 保存在 trapframe 的 user_to_kern_epc 字段中
     p->tf->user_to_kern_epc = ucode_va;
     
@@ -708,6 +725,17 @@ void proc_scheduler()
             proc_t *p = &proc_list[i];
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
+                // 调试：检查保存的内核上下文是否合法，防止栈/上下文被破坏后继续调度导致不可预期的跳转
+                if (!(p->ctx.sp > p->kstack && p->ctx.sp <= p->kstack + PGSIZE)) {
+                    printf("[sched-debug] bad ctx.sp pid=%d sp=%p kstack=[%p, %p)\n",
+                           p->pid, p->ctx.sp, p->kstack, p->kstack + PGSIZE);
+                    panic("proc_scheduler: ctx.sp corrupt");
+                }
+                pte_t *pte = vm_getpte(NULL, p->ctx.ra, false);
+                if (!(pte && (*pte & PTE_X))) {
+                    printf("[sched-debug] bad ctx.ra pid=%d ra=%p\n", p->pid, p->ctx.ra);
+                    panic("proc_scheduler: ctx.ra non-exec");
+                }
                 p->state = RUNNING;
                 c->proc = p;
                 swtch(&c->ctx, &p->ctx);

@@ -14,17 +14,18 @@ void print_init(void)
     spinlock_init(&print_lk, "printf");
 }
 
-/* %d %p */
-static void printint(int xx, int base, int sign)
+/* %d / %x */
+static void printint(int64 xx, int base, int sign)
 {
-    char buf[16];
+    char buf[32];
     int i;
-    uint32 x;
+    uint64 x;
 
-    if (sign && (sign = xx < 0))
-        x = -xx;
-    else
-        x = xx;
+    if (sign && (sign = xx < 0)) {
+        x = (uint64)(-xx);
+    } else {
+        x = (uint64)xx;
+    }
 
     i = 0;
     do
@@ -39,7 +40,7 @@ static void printint(int xx, int base, int sign)
         uart_putc_sync(buf[i]);
 }
 
-/* %x */
+/* %x / %p (64-bit) */
 static void printptr(uint64 x)
 {
     uart_putc_sync('0');
@@ -51,7 +52,7 @@ static void printptr(uint64 x)
 /*
     标准化输出, 需要支持:
     1. %d (32位有符号数,以10进制输出)
-    2. %p (32位无符号数,以16进制输出)
+    2. %p (指针/64位无符号数,以0x开头的16进制输出)
     3. %x (64位无符号数,以0x开头的16进制输出)
     4. %c (单个字符)
     5. %s (字符串)
@@ -71,9 +72,9 @@ void printf(const char *fmt, ...) {
                 printint(v, 10, 1);
                 break;
             }
-            case 'p': { // 32-bit unsigned hexadecimal
-                unsigned int v = va_arg(ap, unsigned int);
-                printint(v, 16, 0);
+            case 'p': { // pointer: treat as 64-bit
+                uint64 v = va_arg(ap, uint64);
+                printptr(v);
                 break;
             }
             case 'x': { // 64-bit unsigned hexadecimal
