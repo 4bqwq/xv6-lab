@@ -30,7 +30,10 @@ void fs_init()
     // 1) 先把 buffer 系统拉起来
     buffer_init();
 
-    // 2) 读入超级块（block 0）到全局 sb
+	// 2) 初始化inode_cache
+	inode_init();
+
+    // 3) 读入超级块（block 0）到全局 sb
     buffer_t *buf = buffer_get(FS_SB_BLOCK);
     assert(buf && buf->data, "fs_init: failed to read superblock");
 
