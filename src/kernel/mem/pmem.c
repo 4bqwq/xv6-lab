@@ -11,11 +11,12 @@ static void region_build(alloc_region_t *r, uint64 begin, uint64 end) {
     r->allocable = 0;
     r->list_head.next = NULL;
 
-    for (uint64 p = r->begin; p + PGSIZE <= r->end; p += PGSIZE) {
+    for (uint64 p = r->end - PGSIZE; p >= r->begin; p -= PGSIZE) {
         page_node_t *node = (page_node_t *)p;    // 复用页头 8B 做 next 指针
         node->next = r->list_head.next;
         r->list_head.next = node;
         r->allocable++;
+        if (p == r->begin) break;
     }
 }
 
