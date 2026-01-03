@@ -237,10 +237,51 @@ static __attribute__((unused)) char* get_element(char *path, char *name)
 */
 static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
 {
-	(void)path;
-	(void)name;
-	(void)find_parent_inode;
-	return NULL;
+	inode_t *ip = inode_get(ROOT_INODE);
+	inode_lock(ip);
+
+	while (1) {
+		path = get_element(path, name);
+		if (path == NULL || name[0] == 0) {
+			break;
+		}
+
+		/* 如果要找父亲，并且已经到达最后一段，则返回当前 inode */
+		if (find_parent_inode && path[0] == 0) {
+			inode_unlock(ip);
+			return ip;
+		}
+
+		if (ip->disk_info.type != INODE_TYPE_DIR) {
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+
+		uint32 inode_num = dentry_search(ip, name);
+		if (inode_num == INVALID_INODE_NUM) {
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+
+		inode_t *next = inode_get(inode_num);
+		inode_lock(next);
+		inode_unlock(ip);
+		inode_put(ip);
+		ip = next;
+
+		if (path[0] == 0)
+			break;
+	}
+
+	inode_unlock(ip);
+
+	if (find_parent_inode) {
+		inode_put(ip);
+		return NULL;
+	}
+	return ip;
 }
 
 /*
