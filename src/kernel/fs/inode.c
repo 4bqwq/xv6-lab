@@ -1,4 +1,5 @@
 #include "mod.h"
+#include "../mem/method.h"
 
 extern super_block_t sb;
 
@@ -29,11 +30,27 @@ void inode_init()
 */
 static __attribute__((unused)) bool __free_data_blocks(uint32 block_num, uint32 level)
 {
-	(void)level;
-	/* 空洞或文件末尾 */
 	if (block_num == 0)
 		return true;
-	return false;
+
+	if (level == 0) {
+		bitmap_free_block(block_num);
+		return false;
+	}
+
+	buffer_t *b = buffer_get(block_num);
+	uint32 *entry = (uint32 *)b->data;
+	bool meet_empty = false;
+
+	for (uint32 i = 0; i < BLOCK_SIZE / sizeof(uint32); i++) {
+		meet_empty = __free_data_blocks(entry[i], level - 1);
+		if (meet_empty)
+			break;
+	}
+
+	buffer_put(b);
+	bitmap_free_block(block_num);
+	return meet_empty;
 }
 
 /* 
@@ -77,9 +94,104 @@ static __attribute__((unused)) void free_data_blocks(uint32 *inode_index)
 */
 static __attribute__((unused)) uint32 locate_or_add_block(uint32 *inode_index, uint32 logical_block_num)
 {
-	(void)inode_index;
-	(void)logical_block_num;
-	return BLOCK_NUM_UNUSED;
+	if (logical_block_num >= INODE_BLOCK_INDEX_3)
+		return (uint32)-1;
+
+	/* 直接映射 */
+	if (logical_block_num < INODE_BLOCK_INDEX_1) {
+		uint32 *p = &inode_index[logical_block_num];
+		if (*p == 0) {
+			uint32 bnum = bitmap_alloc_block();
+			if (bnum == (uint32)-1)
+				return (uint32)-1;
+			*p = bnum;
+		}
+		return *p;
+	}
+
+	/* 一级间接映射 */
+	if (logical_block_num < INODE_BLOCK_INDEX_2) {
+		uint32 inner = logical_block_num - INODE_BLOCK_INDEX_1;
+		uint32 idx_block_idx = inner / 1024;
+		uint32 idx_off = inner % 1024;
+
+		uint32 *p_index_block = &inode_index[INODE_INDEX_1 + idx_block_idx];
+		if (*p_index_block == 0) {
+			uint32 new_block = bitmap_alloc_block();
+			if (new_block == (uint32)-1)
+				return (uint32)-1;
+			*p_index_block = new_block;
+			buffer_t *b = buffer_get(new_block);
+			memset(b->data, 0, BLOCK_SIZE);
+			buffer_write(b);
+			buffer_put(b);
+		}
+
+		buffer_t *b = buffer_get(*p_index_block);
+		uint32 *entry = (uint32 *)b->data + idx_off;
+		if (*entry == 0) {
+			uint32 new_block = bitmap_alloc_block();
+			if (new_block == (uint32)-1) {
+				buffer_put(b);
+				return (uint32)-1;
+			}
+			*entry = new_block;
+			buffer_write(b);
+		}
+		uint32 ret = *entry;
+		buffer_put(b);
+		return ret;
+	}
+
+	/* 二级间接映射 */
+	uint32 inner = logical_block_num - INODE_BLOCK_INDEX_2;
+	uint32 idx_idx = inner / 1024;
+	uint32 idx_off = inner % 1024;
+
+	if (inode_index[INODE_INDEX_2] == 0) {
+		uint32 new_block = bitmap_alloc_block();
+		if (new_block == (uint32)-1)
+			return (uint32)-1;
+		inode_index[INODE_INDEX_2] = new_block;
+		buffer_t *b = buffer_get(new_block);
+		memset(b->data, 0, BLOCK_SIZE);
+		buffer_write(b);
+		buffer_put(b);
+	}
+
+	buffer_t *b_idx_idx = buffer_get(inode_index[INODE_INDEX_2]);
+	uint32 *idx_idx_base = (uint32 *)b_idx_idx->data;
+	if (idx_idx_base[idx_idx] == 0) {
+		uint32 new_index_block = bitmap_alloc_block();
+		if (new_index_block == (uint32)-1) {
+			buffer_put(b_idx_idx);
+			return (uint32)-1;
+		}
+		idx_idx_base[idx_idx] = new_index_block;
+		buffer_write(b_idx_idx);
+
+		buffer_t *b_new = buffer_get(new_index_block);
+		memset(b_new->data, 0, BLOCK_SIZE);
+		buffer_write(b_new);
+		buffer_put(b_new);
+	}
+
+	buffer_t *b_idx = buffer_get(idx_idx_base[idx_idx]);
+	uint32 *entry = (uint32 *)b_idx->data + idx_off;
+	if (*entry == 0) {
+		uint32 new_block = bitmap_alloc_block();
+		if (new_block == (uint32)-1) {
+			buffer_put(b_idx);
+			buffer_put(b_idx_idx);
+			return (uint32)-1;
+		}
+		*entry = new_block;
+		buffer_write(b_idx);
+	}
+	uint32 ret = *entry;
+	buffer_put(b_idx);
+	buffer_put(b_idx_idx);
+	return ret;
 }
 
 /*---------------------关于inode的管理: get dup lock unlock put----------------------*/
@@ -251,6 +363,100 @@ void inode_delete(inode_t *ip)
 	memset(&ip->disk_info, 0, sizeof(inode_disk_t));
 	ip->valid_info = false;
 	inode_rw(ip, true);
+}
+
+/*----------------------基于inode的数据读写操作--------------------*/
+
+/*
+	基于inode的数据读取
+	inode管理的数据空间逻辑上是一个连续的数组data
+	需要拷贝data[offset,offset+len)到dst(用户态地址/内核态地址)
+	返回读取的数据量(字节)
+*/
+uint32 inode_read_data(inode_t *ip, uint32 offset, uint32 len, void *dst, bool is_user_dst)
+{
+	assert(sleeplock_holding(&ip->slk), "inode_read_data: slk");
+	if (ip->disk_info.type == INODE_TYPE_DIR)
+		assert(ip->disk_info.size <= BLOCK_SIZE, "inode_read_data: dir size");
+
+	if (offset >= ip->disk_info.size)
+		return 0;
+
+	if (offset + len > ip->disk_info.size)
+		len = ip->disk_info.size - offset;
+
+	uint32 done = 0;
+	while (done < len) {
+		uint32 cur_off = offset + done;
+		uint32 logical_block = cur_off / BLOCK_SIZE;
+		uint32 block_off = cur_off % BLOCK_SIZE;
+		uint32 cut = MIN(len - done, BLOCK_SIZE - block_off);
+
+		uint32 block_num = locate_or_add_block(ip->disk_info.index, logical_block);
+		assert(block_num != (uint32)-1, "inode_read_data: invalid block");
+
+		buffer_t *b = buffer_get(block_num);
+		if (is_user_dst) {
+			uvm_copyout(myproc()->pgtbl, (uint64)dst + done, (uint64)(b->data + block_off), cut);
+		} else {
+			memmove((uint8 *)dst + done, b->data + block_off, cut);
+		}
+		buffer_put(b);
+
+		done += cut;
+	}
+	return done;
+}
+
+/*
+	基于inode的数据写入
+	inode管理的数据空间逻辑上是一个连续的数组data
+	需要拷贝src(用户态地址/内核态地址)到data[offset,offset+len)
+	返回写入的数据量(字节)
+*/
+uint32 inode_write_data(inode_t *ip, uint32 offset, uint32 len, void *src, bool is_user_src)
+{
+	assert(sleeplock_holding(&ip->slk), "inode_write_data: slk");
+	if (len == 0)
+		return 0;
+
+	uint64 max_size = (uint64)INODE_BLOCK_INDEX_3 * BLOCK_SIZE;
+	if (offset >= max_size)
+		return 0;
+	if ((uint64)offset + len > max_size)
+		len = (uint32)(max_size - offset);
+	if ((uint64)offset + len > INODE_MAX_SIZE)
+		len = (uint32)(INODE_MAX_SIZE - offset);
+
+	uint32 done = 0;
+	while (done < len) {
+		uint32 cur_off = offset + done;
+		uint32 logical_block = cur_off / BLOCK_SIZE;
+		uint32 block_off = cur_off % BLOCK_SIZE;
+		uint32 cut = MIN(len - done, BLOCK_SIZE - block_off);
+
+		uint32 block_num = locate_or_add_block(ip->disk_info.index, logical_block);
+		if (block_num == (uint32)-1)
+			break;
+
+		buffer_t *b = buffer_get(block_num);
+		if (is_user_src) {
+			uvm_copyin(myproc()->pgtbl, (uint64)(b->data + block_off), (uint64)src + done, cut);
+		} else {
+			memmove(b->data + block_off, (uint8 *)src + done, cut);
+		}
+		buffer_write(b);
+		buffer_put(b);
+
+		done += cut;
+	}
+
+	uint32 new_size = offset + done;
+	if (new_size > ip->disk_info.size)
+		ip->disk_info.size = new_size;
+	inode_rw(ip, true);
+
+	return done;
 }
 
 static char *inode_type_list[] = {"DATA", "DIR", "DEVICE"};
