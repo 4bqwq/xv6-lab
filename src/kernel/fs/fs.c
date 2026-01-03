@@ -49,75 +49,73 @@ void fs_init()
     assert(sb.total_blocks > 0, "fs_init: total_blocks invalid");
 
     /* fs_init in fs.c */
-	printf("============= test begin =============\n\n");
 
-	inode_t *rooti, *ip_1, *ip_2, *ip_3;
-	uint32 inode_num_1, inode_num_2, inode_num_3;
-	uint32 len, cutlen, offset;
-	char tmp[10];
+    printf("============= test begin =============\n\n");
 
-	tmp[9] = 0;
-	cutlen = 9;
+	inode_t *rooti, *ip_1, *ip_2, *ip_3, *ip_4, *ip_5;
+	
+	/* 准备测试环境 */
+
 	rooti = inode_get(ROOT_INODE);
-
-	/* 搜索预置的dentry */
-
+	ip_1 = inode_create(INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	ip_2 = inode_create(INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	ip_3 = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	
 	inode_lock(rooti);
-	inode_num_1 = dentry_search(rooti, "ABCD.txt");
-	inode_num_2 = dentry_search(rooti, "abcd.txt");
-	inode_num_3 = dentry_search(rooti, ".");
-	if (inode_num_1 == INVALID_INODE_NUM || 
-		inode_num_2 == INVALID_INODE_NUM || 
-		inode_num_3 == INVALID_INODE_NUM) {
-		panic("invalid inode num!");
-	}
-	dentry_print(rooti);
-	inode_unlock(rooti);
-
-	ip_1 = inode_get(inode_num_1);
 	inode_lock(ip_1);
-	ip_2 = inode_get(inode_num_2);
 	inode_lock(ip_2);
-	ip_3 = inode_get(inode_num_3);
 	inode_lock(ip_3);
 
-	inode_print(ip_1, "ABCD.txt");
-	inode_print(ip_2, "abcd.txt");
-	inode_print(ip_3, "root");
+	if (dentry_create(rooti, ip_1->inode_num, "AABBC") == -1)
+		panic("dentry_create fail 1!");
+	if (dentry_create(ip_1, ip_2->inode_num, "aaabb") == -1)
+		panic("dentry_create fail 2!");
+	if (dentry_create(ip_2, ip_3->inode_num, "file.txt") == -1)
+		panic("dentry_create fail 3!");
 
-	len = inode_read_data(ip_1, 0, cutlen, tmp, false);
-	assert(len == cutlen, "read fail 1!");
-	printf("\nread data: %s\n", tmp);
+	char tmp1[] = "This is file context!";
+	char tmp2[32];
+	inode_write_data(ip_3, 0, sizeof(tmp1), tmp1, false);
 
-	len = inode_read_data(ip_2, 0, cutlen, tmp, false);
-	assert(len == cutlen, "read fail 2!");
-	printf("read data: %s\n\n", tmp);
+	inode_rw(rooti, true);
+	inode_rw(ip_1, true);
+	inode_rw(ip_2, true);
 
+	inode_unlock(rooti);
 	inode_unlock(ip_1);
 	inode_unlock(ip_2);
 	inode_unlock(ip_3);
+	inode_put(rooti);
 	inode_put(ip_1);
 	inode_put(ip_2);
 	inode_put(ip_3);
 
-	/* 创建和删除dentry */
-	inode_lock(rooti);
+	char *path = "///AABBC///aaabb/file.txt";
+	char name[MAXLEN_FILENAME];
 
-	ip_1 = inode_create(INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);	
-	offset = dentry_create(rooti, ip_1->inode_num, "new_dir");
-	inode_num_1 = dentry_search(rooti, "new_dir");
-	printf("new dentry offset = %d\n", offset);
-	printf("new dentry inode_num = %d\n\n", inode_num_1);
+	ip_4 = path_to_inode(path);
+	if (ip_4 == NULL)
+		panic("invalid ip_4");
+
+	ip_5 = path_to_parent_inode(path, name);
+	if (ip_5 == NULL)
+		panic("invalid ip_5");
 	
-	dentry_print(rooti);
+	printf("get a name = %s\n\n", name);
 
-	inode_num_2 = dentry_delete(rooti, "new_dir");
-	assert(inode_num_1 == inode_num_2, "inode num is not equal!");
+	inode_lock(ip_4);
+	inode_lock(ip_5);
 
-	dentry_print(rooti);
+	inode_print(ip_4, "file.txt");
+	inode_print(ip_5, "aaabb");
 
-	inode_unlock(rooti);
-	inode_put(rooti);
+	inode_read_data(ip_4, 0, 32, tmp2, false);
+	printf("read data: %s\n\n", tmp2);
+
+	inode_unlock(ip_4);
+	inode_unlock(ip_5);
+	inode_put(ip_4);
+	inode_put(ip_5);
 
 	printf("============= test end =============\n");
 
