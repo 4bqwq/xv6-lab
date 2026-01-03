@@ -22,7 +22,28 @@
 */
 uint32 dentry_search(inode_t *ip, char *name)
 {
-	return INVALID_INODE_NUM;
+	assert(sleeplock_holding(&ip->slk), "dentry_search: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search: not dir!");
+	assert(ip->disk_info.size <= BLOCK_SIZE, "dentry_search: dir size");
+
+	if (ip->disk_info.index[0] == 0)
+		return INVALID_INODE_NUM;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de = (dentry_t *)(buf->data);
+	uint32 ret = INVALID_INODE_NUM;
+
+	for (uint32 i = 0; i < DENTRY_PER_BLOCK; i++, de++) {
+		if (de->name[0] == 0)
+			continue;
+		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+			ret = de->inode_num;
+			break;
+		}
+	}
+
+	buffer_put(buf);
+	return ret;
 }
 
 /*
@@ -33,7 +54,60 @@ uint32 dentry_search(inode_t *ip, char *name)
 */
 uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 {
-	return (uint32)-1;
+	assert(sleeplock_holding(&ip->slk), "dentry_create: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_create: not dir!");
+	assert(ip->disk_info.size <= BLOCK_SIZE, "dentry_create: dir size");
+
+	/* 确保目录数据块存在 */
+	if (ip->disk_info.index[0] == 0) {
+		uint32 block_num = bitmap_alloc_block();
+		assert(block_num != (uint32)-1, "dentry_create: alloc fail");
+		ip->disk_info.index[0] = block_num;
+
+		buffer_t *b = buffer_get(block_num);
+		memset(b->data, 0, BLOCK_SIZE);
+		buffer_write(b);
+		buffer_put(b);
+	}
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *free_slot = NULL;
+	uint32 free_off = 0;
+
+	for (uint32 i = 0; i < DENTRY_PER_BLOCK; i++) {
+		dentry_t *de = (dentry_t *)(buf->data + i * sizeof(dentry_t));
+		if (de->name[0] != 0) {
+			if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+				buffer_put(buf);
+				return (uint32)-1; /* 重名 */
+			}
+			continue;
+		}
+		if (free_slot == NULL) {
+			free_slot = de;
+			free_off = i * sizeof(dentry_t);
+		}
+	}
+
+	if (free_slot == NULL) {
+		buffer_put(buf);
+		return (uint32)-1;
+	}
+
+	memset(free_slot, 0, sizeof(dentry_t));
+	memmove(free_slot->name, name, MAXLEN_FILENAME - 1);
+	free_slot->name[MAXLEN_FILENAME - 1] = 0;
+	free_slot->inode_num = inode_num;
+
+	buffer_write(buf);
+	buffer_put(buf);
+
+	uint32 new_size = free_off + sizeof(dentry_t);
+	if (new_size > ip->disk_info.size)
+		ip->disk_info.size = new_size;
+	inode_rw(ip, true);
+
+	return free_off;
 }
 
 /*
@@ -43,7 +117,47 @@ uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 */
 uint32 dentry_delete(inode_t *ip, char *name)
 {
-	return INVALID_INODE_NUM;
+	assert(sleeplock_holding(&ip->slk), "dentry_delete: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_delete: not dir!");
+	assert(ip->disk_info.size <= BLOCK_SIZE, "dentry_delete: dir size");
+
+	if (ip->disk_info.index[0] == 0)
+		return INVALID_INODE_NUM;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *base = (dentry_t *)buf->data;
+	dentry_t *target = NULL;
+	uint32 ret = INVALID_INODE_NUM;
+
+	for (uint32 i = 0; i < DENTRY_PER_BLOCK; i++) {
+		dentry_t *de = base + i;
+		if (de->name[0] == 0)
+			continue;
+		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+			target = de;
+			ret = de->inode_num;
+			break;
+		}
+	}
+
+	if (target != NULL) {
+		memset(target, 0, sizeof(dentry_t));
+		buffer_write(buf);
+
+		uint32 new_size = ip->disk_info.size;
+		while (new_size > 0) {
+			uint32 off = new_size - sizeof(dentry_t);
+			dentry_t *de = base + off / sizeof(dentry_t);
+			if (de->name[0] != 0)
+				break;
+			new_size -= sizeof(dentry_t);
+		}
+		ip->disk_info.size = new_size;
+		inode_rw(ip, true);
+	}
+
+	buffer_put(buf);
+	return ret;
 }
 
 /* 输出目录中所有有效目录项的信息 (for debug) */
