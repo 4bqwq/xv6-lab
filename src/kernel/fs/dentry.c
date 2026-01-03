@@ -22,7 +22,7 @@
 */
 uint32 dentry_search(inode_t *ip, char *name)
 {
-
+	return INVALID_INODE_NUM;
 }
 
 /*
@@ -33,7 +33,7 @@ uint32 dentry_search(inode_t *ip, char *name)
 */
 uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 {
-
+	return (uint32)-1;
 }
 
 /*
@@ -43,7 +43,7 @@ uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 */
 uint32 dentry_delete(inode_t *ip, char *name)
 {
-
+	return INVALID_INODE_NUM;
 }
 
 /* 输出目录中所有有效目录项的信息 (for debug) */
@@ -83,7 +83,7 @@ void dentry_print(inode_t *ip)
 	get_element("", name) = NULL + name = ""
 	get_element("//", name) = NULL + name = ""
 */
-static char* get_element(char *path, char *name)
+static __attribute__((unused)) char* get_element(char *path, char *name)
 {
 	/* 跳过前置的'/' */
     while (*path == '/')
@@ -123,7 +123,10 @@ static char* get_element(char *path, char *name)
 */
 static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
 {
-
+	(void)path;
+	(void)name;
+	(void)find_parent_inode;
+	return NULL;
 }
 
 /*

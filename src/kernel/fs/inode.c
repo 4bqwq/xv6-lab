@@ -27,15 +27,19 @@ void inode_init()
 	递归删除inode->index中的一个元素
 	返回删除过程中是否遇到空的block_num (文件末尾)
 */
-static bool __free_data_blocks(uint32 block_num, uint32 level)
+static __attribute__((unused)) bool __free_data_blocks(uint32 block_num, uint32 level)
 {
-
+	(void)level;
+	/* 空洞或文件末尾 */
+	if (block_num == 0)
+		return true;
+	return false;
 }
 
 /* 
 	释放inode管理的blocks
 */
-static void free_data_blocks(uint32 *inode_index)
+static __attribute__((unused)) void free_data_blocks(uint32 *inode_index)
 {
 	unsigned int i;
 	bool meet_empty = false;
@@ -71,9 +75,11 @@ static void free_data_blocks(uint32 *inode_index)
 	2. 将已经分配出去的区域往外扩展1个block (申请block并返回block_num) 
 	成功返回block_num, 失败返回-1
 */
-static uint32 locate_or_add_block(uint32 *inode_index, uint32 logical_block_num)
+static __attribute__((unused)) uint32 locate_or_add_block(uint32 *inode_index, uint32 logical_block_num)
 {
-
+	(void)inode_index;
+	(void)logical_block_num;
+	return BLOCK_NUM_UNUSED;
 }
 
 /*---------------------关于inode的管理: get dup lock unlock put----------------------*/
