@@ -43,9 +43,53 @@ void fs_init()
 
     buffer_put(buf);
 
-    // 3) 做最基本的合法性检查，避免你之后 debug 到怀疑人生
+    // 4) 做最基本的合法性检查，避免你之后 debug 到怀疑人生
     assert(sb.magic_num == FS_MAGIC, "fs_init: bad FS magic");
     assert(sb.block_size == BLOCK_SIZE, "fs_init: unexpected block size");
     assert(sb.total_blocks > 0, "fs_init: total_blocks invalid");
-}
 
+	/* fs_init in fs.c */
+
+	printf("============= test begin =============\n\n");
+
+	inode_t *rooti, *ip_1, *ip_2;
+	
+	rooti = inode_get(ROOT_INODE);
+	inode_lock(rooti);
+	inode_print(rooti, "root");
+	inode_unlock(rooti);
+
+	/* 第一次查看bitmap */
+	bitmap_print(false);
+
+	ip_1 = inode_create(INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	ip_2 = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	inode_lock(ip_1);
+	inode_lock(ip_2);
+	inode_dup(ip_2);
+
+	inode_print(ip_1, "dir");
+	inode_print(ip_2, "data");
+	
+	/* 第二次查看bitmap */
+	bitmap_print(false);
+
+	ip_1->disk_info.nlink = 0;
+	ip_2->disk_info.nlink = 0;
+	inode_unlock(ip_1);
+	inode_unlock(ip_2);
+	inode_put(ip_1);
+	inode_put(ip_2);
+
+	/* 第三次查看bitmap */
+	bitmap_print(false);
+
+	inode_put(ip_2);
+	
+	/* 第四次查看bitmap */
+	bitmap_print(false);
+
+	printf("============= test end =============\n\n");
+
+	while(1);
+}

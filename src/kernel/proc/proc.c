@@ -58,7 +58,6 @@ static void __attribute__((unused)) proc_return()
 
             // 在无锁状态下安全执行耗时操作
             fs_init();
-            sb_print();
 
             // 执行完毕，标记为完成
             spinlock_acquire(&fsinit_lk);
