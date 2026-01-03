@@ -52,44 +52,84 @@ void fs_init()
 
 	printf("============= test begin =============\n\n");
 
-	inode_t *rooti, *ip_1, *ip_2;
+	inode_t *ip_1, *ip_2;
+	uint32 len, cut_len;
+
+	/* 小批量读写测试 */
+
+	int small_src[10], small_dst[10];
+	for (int i = 0; i < 10; i++)
+		small_src[i] = i;
 	
-	rooti = inode_get(ROOT_INODE);
-	inode_lock(rooti);
-	inode_print(rooti, "root");
-	inode_unlock(rooti);
-
-	/* 第一次查看bitmap */
-	bitmap_print(false);
-
-	ip_1 = inode_create(INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
-	ip_2 = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	ip_1 = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
 	inode_lock(ip_1);
-	inode_lock(ip_2);
-	inode_dup(ip_2);
+	inode_print(ip_1, "small_data");
 
-	inode_print(ip_1, "dir");
-	inode_print(ip_2, "data");
-	
-	/* 第二次查看bitmap */
-	bitmap_print(false);
+	printf("writing data...\n\n");
+	cut_len = 10 * sizeof(int);
+	for (uint32 offset = 0; offset < 400 * cut_len; offset += cut_len) {
+		len = inode_write_data(ip_1, offset, cut_len, small_src, false);
+		assert(len == cut_len, "write fail 1!");
+	}
+	inode_print(ip_1, "small_data");
+
+	len = inode_read_data(ip_1, 120 * cut_len + 4, cut_len, small_dst, false);
+	assert(len == cut_len, "read fail 1!");
+	printf("read data:");
+	for (int i = 0; i < 10; i++)
+		printf(" %d", small_dst[i]);
+	printf("\n\n");
 
 	ip_1->disk_info.nlink = 0;
-	ip_2->disk_info.nlink = 0;
 	inode_unlock(ip_1);
-	inode_unlock(ip_2);
 	inode_put(ip_1);
+
+	/* 大批量读写测试 */
+
+	char *big_src, big_dst[9];
+	big_dst[8] = 0;
+
+	/* 申请五个连续物理页面 (初始化阶段, 通常来说能拿到连续的) */
+	big_src = pmem_alloc(true);
+	assert(pmem_alloc(true) == big_src + PGSIZE, "contiguous fail!");
+	assert(pmem_alloc(true) == big_src + PGSIZE * 2, "contiguous fail!");
+	assert(pmem_alloc(true) == big_src + PGSIZE * 3, "contiguous fail!");
+	assert(pmem_alloc(true) == big_src + PGSIZE * 4, "contiguous fail!");
+
+	for (uint32 i = 0; i < 5 * (PGSIZE / 8); i++)
+		for (uint32 j = 0; j < 8; j++)
+			big_src[i * 8 + j] = 'A' + j;
+
+	ip_2 = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	inode_lock(ip_2);
+	inode_print(ip_2, "big_data");
+
+	printf("writing data...\n\n");
+	cut_len = PGSIZE * 4 + 1110;
+	for (uint32 offset = 0; offset < cut_len * 150; offset += cut_len)
+	{
+		len = inode_write_data(ip_2, offset, cut_len, big_src, false);
+		assert(len == cut_len, "write fail 2!");
+	}
+	inode_print(ip_2, "big_data");
+
+	len = inode_read_data(ip_1, cut_len * 150 - 8, 8, big_dst, false);
+	assert(len == 8, "read fail 2");
+	printf("read data: %s\n", big_dst);
+
+
+	ip_2->disk_info.nlink = 0;
+	inode_unlock(ip_2);
 	inode_put(ip_2);
 
-	/* 第三次查看bitmap */
-	bitmap_print(false);
+	pmem_free((uint64)big_src, true);
+	pmem_free((uint64)big_src + PGSIZE, true);
+	pmem_free((uint64)big_src + PGSIZE * 2, true);
+	pmem_free((uint64)big_src + PGSIZE * 3, true);
+	pmem_free((uint64)big_src + PGSIZE * 4, true);
 
-	inode_put(ip_2);
-	
-	/* 第四次查看bitmap */
-	bitmap_print(false);
 
-	printf("============= test end =============\n\n");
+	printf("============= test end =============\n");
 
 	while(1);
 }
