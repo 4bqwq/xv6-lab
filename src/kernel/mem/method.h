@@ -7,7 +7,7 @@ extern alloc_region_t user_region;
 void pmem_init(void);
 void *pmem_alloc(bool in_kernel);
 void pmem_free(uint64 page, bool in_kernel);
-
+void pmem_stat(uint32 *free_pages_in_kernel, uint32 *free_pages_in_user);
 /* kvm.c: 内核态虚拟内存管理 + 页表通用函数 */
 
 pte_t *vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc);
@@ -48,6 +48,8 @@ void uvm_copy_pgtbl(pgtbl_t old, pgtbl_t new, uint64 heap_top, uint64 ustack_npa
 /* mmap.c: mmap_node仓库管理 */
 
 void mmap_init();
+
 mmap_region_t *mmap_region_alloc();
 void mmap_region_free(mmap_region_t *mmap);
-void mmap_show_nodelist();
+void mmap_show_nodelist();\
+

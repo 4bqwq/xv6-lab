@@ -156,5 +156,6 @@ typedef struct mmap_region_node
 // 映射区域的终点 (给ustack留16MB内存空间)
 #define MMAP_END (TRAPFRAME - 16 * 256 * PGSIZE)
 
+#define FLAG_READ_ONLY 0x1
 // 映射区域的起点 (单个进程的mmap_reagion最大占据64MB内存空间)
 #define MMAP_BEGIN (MMAP_END - 64 * 256 * PGSIZE)

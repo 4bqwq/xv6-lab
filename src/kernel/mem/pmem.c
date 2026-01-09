@@ -79,3 +79,26 @@ void pmem_free(uint64 page, bool in_kernel)
     if (in_kernel) region_free(&kern_region, page);
     else           region_free(&user_region, page);
 }
+
+void pmem_stat(uint32 *free_pages_in_kernel, uint32 *free_pages_in_user) 
+{
+    *free_pages_in_kernel = 0;
+    *free_pages_in_user = 0;
+
+    // Count free pages in kernel region
+    page_node_t *node = kern_region.list_head.next;
+    while (node != NULL) {
+        (*free_pages_in_kernel)++;
+        node = node->next;
+    }
+
+    // Count free pages in user region
+    node = user_region.list_head.next;
+    while (node != NULL) {
+        (*free_pages_in_user)++;
+        node = node->next;
+        }
+}
+        node = node->next;
+    }
+}

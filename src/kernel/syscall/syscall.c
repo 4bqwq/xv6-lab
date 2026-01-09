@@ -25,6 +25,9 @@ static uint64 (*syscalls[])(void) = {
     [SYS_put_block] sys_put_block,
     [SYS_show_buffer] sys_show_buffer,
     [SYS_flush_buffer] sys_flush_buffer,
+    
+    //lab9
+    [SYS_helloworld] sys_helloworld,
 };
 
 // 基于系统调用表的请求跳转
@@ -72,4 +75,8 @@ void arg_str(int n, char *buf, int maxlen)
     uvm_copyin_str(p->pgtbl, (uint64)buf, addr, maxlen);
 }
 
-
+uint64 sys_helloworld(void)
+{
+    printf("hello world!\n");
+    return 0;
+}

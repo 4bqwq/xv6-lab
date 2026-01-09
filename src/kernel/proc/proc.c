@@ -16,6 +16,37 @@ extern void trap_user_return();
 
 // in mem/kvm.c
 extern void kvm_clone_kernel_map(pgtbl_t dst);
+
+// 进程结构体数组 + 第一个用户进程的指针
+typedef struct proc {
+    file_t *open_file[N_FILE];  // 文件指针表
+    inode_t *cwd;               // 当前工作目录
+    uint64 heap_start;          // 堆的起始位置
+    // 其他现有字段
+} proc_t;
+
+// 初始化进程的 open_file 和 cwd 字段
+void proc_init(proc_t *p) {
+    for (int i = 0; i < N_FILE; i++) {
+        p->open_file[i] = NULL;  // 设置所有文件指针为 NULL
+    }
+    p->cwd = root_inode();      // 设置 cwd 为根目录的 inode
+}
+
+// 设置进程的工作目录
+void proc_set_cwd(proc_t *p, inode_t *new_cwd) {
+    p->cwd = new_cwd;
+}
+
+// 销毁进程时清理 open_file 和 cwd 字段
+void proc_free(proc_t *p) {
+    for (int i = 0; i < N_FILE; i++) {
+        if (p->open_file[i]) {
+            file_close(p->open_file[i]);  // 关闭每个打开的文件
+        }
+    }
+    p->cwd = NULL;  // 清除 cwd
+}
 /* ------------本地变量----------- */
 
 // 进程结构体数组 + 第一个用户进程的指针

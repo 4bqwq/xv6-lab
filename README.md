@@ -1,360 +1,207 @@
-# Lab 8
 
-本次实验从 Block-level 的磁盘读写抽象进一步提升，构建一个完整的、支持变长文件（Inode）和层次化目录（Dentry）的文件系统。
+# Lab9：文件系统与全系统整合
 
----
-
-## 一、Inode 生命周期与同步
-
-在内存中维护 Inode 状态，并实现内存 Inode (`inode_t`) 与磁盘 Inode (`inode_disk_t`) 的双向同步。
-
-### 初始化
-
-首先，我们需要初始化管理内存 Inode 的全局结构。
-
-```c
-void inode_init()
-{
-	spinlock_init(&lk_inode_cache, "inode_cache");
-	for (int i = 0; i < N_INODE; i++) {
-		inode_t *ip = &inode_cache[i];
-		ip->valid_info = false;
-		ip->inode_num = 0;
-		ip->ref = 0;
-		memset(&ip->disk_info, 0, sizeof(inode_disk_t));
-		sleeplock_init(&ip->slk, "inode");
-	}
-}
-```
-*   始化 `lk_inode_cache` 自旋锁，用于保护 `inode_cache` 数组的并发访问（如分配、引用计数修改）。
-*   遍历 `inode_cache` 数组，将所有槽位的 `valid_info` 置为 `false`，表示该槽位未关联有效磁盘数据；初始化 `ref` 为 0，表示空闲；并为每个 Inode 初始化一个睡眠锁 `slk`，用于后续对单个 Inode 的独占操作（特别是涉及磁盘 I/O 时）。
-
-### 磁盘同步
-
-```c
-void inode_rw(inode_t *ip, bool write)
-{
-	assert(sleeplock_holding(&ip->slk), "inode_rw: slk");
-
-	uint32 block_num = sb.inode_firstblock + ip->inode_num / INODE_PER_BLOCK;
-	uint32 byte_offset = (ip->inode_num % INODE_PER_BLOCK) * sizeof(inode_disk_t);
-
-	buffer_t *buf = buffer_get(block_num);
-	if (write) {
-		memmove(buf->data + byte_offset, &ip->disk_info, sizeof(inode_disk_t));
-		buffer_write(buf);
-	} else {
-		memmove(&ip->disk_info, buf->data + byte_offset, sizeof(inode_disk_t));
-	}
-	buffer_put(buf);
-}
-```
-*   根据 `inode_num` 计算物理地址。
-    *   `block_num`：`inode_region` 起始块 + (`inode_num` / 每块 Inode 数)。
-    *   `byte_offset`：(`inode_num` % 每块 Inode 数) * Inode 大小。
-*   调用 buffer_get 来读取这块缓冲区的内容。
-*   读写分流。
-    *   `write=true`：将内存里的 `ip->disk_info` 覆盖到 Buffer 对应偏移处，并调用 `buffer_write` 标记脏页刷盘。
-    *   `write=false`：将 Buffer 中的数据加载到内存 `ip->disk_info`。
-
-### 资源获取与分配
-
-实现了类似 LRU 的资源获取逻辑。
-
-```c
-inode_t *inode_get(uint32 inode_num)
-{
-	inode_t *ip = NULL;
-	spinlock_acquire(&lk_inode_cache);
-
-	/* 1. 尝试在缓存中查找 */
-	for (int i = 0; i < N_INODE; i++) {
-		if (inode_cache[i].ref > 0 && inode_cache[i].inode_num == inode_num) {
-			ip = &inode_cache[i];
-			ip->ref++;
-			spinlock_release(&lk_inode_cache);
-			return ip;
-		}
-	}
-
-	/* 2. 查找空闲槽位 */
-	for (int i = 0; i < N_INODE; i++) {
-		if (inode_cache[i].ref == 0) {
-			ip = &inode_cache[i];
-			ip->inode_num = inode_num;
-			ip->valid_info = false; // 标记数据无效，需要 inode_lock 时加载
-			ip->ref = 1;
-			spinlock_release(&lk_inode_cache);
-			return ip;
-		}
-	}
-    // panic handling
-    spinlock_release(&lk_inode_cache);
-	panic("inode_get: no free inode");
-	return NULL;
-}
-```
-*   Cache Hit：遍历数组，如果发现 `inode_num` 匹配且 `ref > 0`，直接增加引用计数返回。
-*   Cache Miss：寻找 `ref == 0` 的空闲位。将 `valid_info` 设为 `false`，这会迫使后续的 `inode_lock` 调用 `inode_rw` 从磁盘拉取最新数据。
-
-### 资源释放与删除
-
-```c
-void inode_put(inode_t* ip)
-{
-	spinlock_acquire(&lk_inode_cache);
-    // ...
-	if (ip->ref == 1 && ip->valid_info && ip->disk_info.nlink == 0) {
-		spinlock_release(&lk_inode_cache);
-
-		inode_lock(ip);
-		/* 删除inode并释放资源 */
-		inode_delete(ip);
-		inode_unlock(ip);
-        // ... 重置 ref, valid_info 等 ...
-		return;
-	}
-
-	ip->ref--;
-	spinlock_release(&lk_inode_cache);
-}
-```
-当一个文件的引用计数降到零（也就是 ip->ref 从 1 减到 0），同时它的硬链接数 nlink 也已经是零，就说明这个文件在内存和磁盘上都没人用了，这时候系统会调用 inode_delete 把它占的 block 和 inode 位图资源回收掉。
-
-### Test 1 运行结果
-![Lab8 Test 1](pictures/lab8_test-1.png)
-*可以看到 Inode root (num=0), dir (num=3), data (num=4) 被正确创建、打印，位图分配与回收逻辑正确。*
+- **A（周屹枫）**：在前面的实验基础上完成Lab9的主要功能实现，包括文件系统的扩展、设备文件操作、目录管理、文件操作逻辑的完善，以及本 `README` 的撰写。
+- **B（严之皓）**：提供文件系统模块基础代码与接口说明，协助文件操作逻辑的集成与调试，参与设备文件与路径管理的联调与测试。
 
 ---
 
-## 二、数据映射与流读写
+## 一、实验目标
 
-实现逻辑块号到物理块号的三级映射，并支持大文件的读写。
+本实验任务是对整个操作系统进行全系统整合，重点包括文件系统的管理与操作，设备文件操作，目录与路径管理等功能的实现和完善。具体任务包括：
 
-### 三级索引映射
+1. **文件系统模块**：
+   - 增强设备文件操作逻辑，支持设备的初始化、读写等功能。
+   - 完善目录与路径管理，支持目录项的查找、添加和删除操作。
+   - 增加文件的读写、打开、关闭操作逻辑，支持文件的基本操作。
 
-这部分逻辑基本都在 `locate_or_add_block` 里面实现。
+2. **进程管理模块**：
+   - 增加进程的文件表和当前工作目录字段，支持进程在执行过程中的文件操作和路径管理。
 
-#### (1) 直接映射与一级间接映射
+3. **系统调用扩展**：
+   - 添加新的系统调用，用于支持文件和目录操作。
+
+---
+
+## 二、功能实现
+
+### 1. 设备文件操作
+
+在 `device.c` 中实现了设备文件操作逻辑，主要包括：
+- **标准输入设备**、**标准输出设备** 和 **标准错误设备** 的初始化和操作。
+- `/dev/zero` 设备文件的支持，能够返回无限的零字节流。
+
 ```c
-	/* 直接映射 (0-9) */
-	if (logical_block_num < INODE_BLOCK_INDEX_1) {
-		uint32 *p = &inode_index[logical_block_num];
-		if (*p == 0) {
-			uint32 bnum = bitmap_alloc_block();
-            // ... 错误处理 ...
-			*p = bnum;
-		}
-		return *p;
-	}
-
-	/* 一级间接映射 (10 - 1033) */
-	if (logical_block_num < INODE_BLOCK_INDEX_2) {
-		// ... 计算 inner 偏移 ...
-		uint32 *p_index_block = &inode_index[INODE_INDEX_1 + idx_block_idx];
-		if (*p_index_block == 0) {
-            // 如果索引块本身不存在，先分配索引块并清零
-			uint32 new_block = bitmap_alloc_block();
-            // ...
-			*p_index_block = new_block;
-            // ... buffer_write(0) 初始化 ...
-		}
-        // 读取索引块，找到对应条目，若为0则分配数据块
-        // ...
-	}
+// 标准输入设备读取操作
+static uint32 device_stdin_read(uint32 len, uint64 dst, bool is_user_dst) {
+    return cons_read(len, dst, is_user_dst);  // 从控制台读取数据
+}
 ```
-*   无论是直接指向的数据块，还是中间的索引块，只要发现为 0，那就说明这个逻辑块目前没有对应的物理块，立即调用 `bitmap_alloc_block` 分配。
-*   分配新的索引块后，得先用 memset 把 b->data 清零，再写回磁盘，否则可能读到残留的脏数据，误指到别的块上。
+解释：`device_stdin_read` 函数用于从标准输入设备读取数据，并通过 `cons_read` 函数将数据传输到用户空间。此函数为设备文件提供了标准输入的读操作。
 
-#### (2) 二级间接映射
+### 2. 目录与路径管理
+
+在 `dentry.c` 中，增加了目录项的操作：
+- **dentry_search**：在目录中查找指定名字的目录项。
+- **dentry_add**：向目录中添加新的目录项。
+- **dentry_remove**：从目录中删除指定的目录项。
+
 ```c
-	/* 二级间接映射 */
-	// ... 
-	if (inode_index[INODE_INDEX_2] == 0) {
-        // 分配一级索引块
-		inode_index[INODE_INDEX_2] = new_block;
-        // ...
-	}
-
-	buffer_t *b_idx_idx = buffer_get(inode_index[INODE_INDEX_2]);
-	uint32 *idx_idx_base = (uint32 *)b_idx_idx->data;
-	if (idx_idx_base[idx_idx] == 0) {
-        // 分配二级索引块
-		idx_idx_base[idx_idx] = new_index_block;
-        // ...
-	}
-    // ... 最后找到数据块 ...
+// 在目录ip中查找是否存在名字为name的目录项
+uint32 dentry_search(inode_t *ip, char *name) {
+    assert(sleep_locked(ip->slk), "dentry_search: must hold lock");
+    for (uint32 i = 0; i < ip->size / sizeof(dentry_t); i++) {
+        dentry_t *entry = (dentry_t *)(ip->data + i * sizeof(dentry_t));
+        if (strcmp(entry->name, name) == 0) {
+            return entry->inode_num;
+        }
+    }
+    return INVALID_INODE_NUM;
+}
 ```
-这里实现了“索引的索引”。逻辑与一级间接类似，只是多了一层 `buffer_get`。先获取 Level-1 Index Block，从中读出 Level-2 Index Block 的块号，再从中读出最终的数据块号。
+解释：`dentry_search` 函数用于在指定目录中查找名为 `name` 的目录项，并返回对应的 inode 编号。如果目录项未找到，则返回 `INVALID_INODE_NUM`。该函数在查找时使用锁机制，确保并发访问时的安全。
 
-### 数据流读写
+### 3. 文件操作逻辑
 
-以 `inode_write_data` 为例：
+在 `fs.c` 中，实现了文件的读写、打开和关闭操作：
+- **file_read** 和 **file_write**：支持文件的读写操作。
+- **file_open** 和 **file_close**：支持文件的打开和关闭，管理文件表。
 
 ```c
-uint32 inode_write_data(inode_t *ip, uint32 offset, uint32 len, void *src, bool is_user_src)
-{
-    // ... 长度校验 ...
-	while (done < len) {
-        // ... 计算逻辑块号 logical_block 和块内偏移 block_off ...
-		uint32 block_num = locate_or_add_block(ip->disk_info.index, logical_block);
-        if (block_num == (uint32)-1)
-			break;
-        
-		buffer_t *b = buffer_get(block_num);
-		if (is_user_src) {
-			uvm_copyin(myproc()->pgtbl, (uint64)(b->data + block_off), (uint64)src + done, cut);
-		} else {
-			memmove(b->data + block_off, (uint8 *)src + done, cut);
-		}
-		buffer_write(b); // 标记脏
-		buffer_put(b);
-		done += cut;
-	}
-    // 更新 inode size 并同步
-    uint32 new_size = offset + done;
-	if (new_size > ip->disk_info.size) {
-		ip->disk_info.size = new_size;
-        inode_rw(ip, true);
+// 文件读操作
+uint32 file_read(file_t *file, uint32 len, uint64 dst, bool is_user_dst) {
+    assert(file != NULL, "file_read: file cannot be NULL");
+    if (file->ip->type == INODE_TYPE_DATA) {
+        return inode_read(file->ip, dst, len);
+    }
+    return 0;  // 如果是目录文件，返回错误
+}
+```
+解释：`file_read` 函数用于读取文件的数据。如果文件是数据文件（`INODE_TYPE_DATA`），则从 inode 中读取内容并将其传输到用户空间。如果是目录文件，则返回 0，表示不能读取目录内容。
+
+### 4. 系统调用扩展
+
+在 `syscall.c` 和 `sysfunc.c` 中添加了新的系统调用，用于支持文件和目录操作：
+- **sys_helloworld**：一个简单的系统调用，打印 "hello world" 信息，用于测试系统调用机制。
+
+```c
+// 新的系统调用: 打印 "hello world"
+uint64 sys_helloworld(void) {
+    printf("hello world!
+");
+    return 0;
+}
+```
+解释：`sys_helloworld` 是一个新增的系统调用，用于向控制台打印 "hello world" 信息。该函数通过 `printf` 实现输出，并返回 0 表示成功。
+
+### 5. 进程管理的文件与路径支持
+
+在 `proc.c` 中，增加了进程的文件表和当前工作目录字段：
+- **proc_init**：初始化进程时，设置文件表和工作目录。
+- **proc_set_cwd**：设置进程的当前工作目录。
+- **proc_free**：销毁进程时清理文件表和工作目录。
+
+```c
+// 初始化进程的 open_file 和 cwd 字段
+void proc_init(proc_t *p) {
+    for (int i = 0; i < N_FILE; i++) {
+        p->open_file[i] = NULL;  // 设置所有文件指针为 NULL
+    }
+    p->cwd = root_inode();      // 设置 cwd 为根目录的 inode
+}
+```
+解释：`proc_init` 函数初始化每个进程的文件表，并将进程的工作目录（`cwd`）设置为根目录的 inode。这样可以确保每个进程在初始化时都具有正确的文件系统状态。
+
+### 6. **物理内存管理 (pmem)**
+
+在 `pmem.c` 中，添加了 `pmem_stat` 函数，统计当前的可用内存页面数量：
+```c
+void pmem_stat(uint32 *free_pages_in_kernel, uint32 *free_pages_in_user) {
+    *free_pages_in_kernel = 0;
+    *free_pages_in_user = 0;
+
+    // Count free pages in kernel region
+    page_node_t *node = kern_region.list_head.next;
+    while (node != NULL) {
+        (*free_pages_in_kernel)++;
+        node = node->next;
+    }
+
+    // Count free pages in user region
+    node = user_region.list_head.next;
+    while (node != NULL) {
+        (*free_pages_in_user)++;
+        node = node->next;
     }
 }
 ```
-这个函数把块设备的离散特性藏了起来，对外表现为一个普通的字节流接口。
+解释：`pmem_stat` 函数通过遍历内核和用户空间的空闲页链表，计算内核空间和用户空间的剩余可用页面数。
 
-它通过 locate_or_add_block 自动搞定扩容，每次读写时只处理 MIN(len, BLOCK_SIZE - off) 这么多字节，保证操作不会跨块，始终落在单个 Buffer 内。
+### 7. **用户虚拟内存管理 (uvm)**
 
-### Test 2 运行结果
-
-![Lab8 Test 2](pictures/lab8_test-2.png)
-*可以看到 `inode big_data` 的 size 达到了 174,940,000 (约 174MB)，`index_list` 中出现了 `1084` (一级间接) 和 `3134` (二级间接) 等块号，证明多级索引工作正常。*
-
-不过我这里测试对于 fs.c 做了一些修改。原始测试代码在当前的内核物理内存环境下，会直接报出 `panic! pmem_alloc: out of memory` 然后退出。
-
-稍微研究了一下，测试代码尝试写入大约 175MB 的数据（17.5KB × 10000）。系统为 Buffer Cache 分配了 16384 个槽位，相当于 64MB 的缓存空间，文件系统据此认为自己可以同时缓存这么多磁盘块。但物理内存管理器手里只有 1024 个页面，总共才 4MB。
-
-随着写入持续进行，文件系统不断调用 block_alloc 获取新块，并通过 buffer_get 将其载入缓存。由于缓存槽位远未用完，buffer_get 不会触发驱逐机制，而是直接向物理内存申请新页。当写入量超过 4MB 后，物理页被耗尽，pmem_alloc 要么失败，要么返回无效地址，最终引发内核 panic 或非法指令异常。
-
-我的修改：
-
+在 `uvm.c` 中，修改了 `uvm_heap_grow` 函数，支持 `flag` 输入参数，控制内存增长时的权限设置：
 ```c
-       printf("writing data...\n\n");
-       // 修改点：将循环次数从 10000 减少到 100，cut_len 保持不变
-       cut_len = PGSIZE * 4 + 1110;
-       for (uint32 offset = 0; offset < cut_len * 100; offset += cut_len) // 这里原先是更大的循环
-       {
-               len = inode_write_data(ip_2, offset, cut_len, big_src, false);
-               assert(len == cut_len, "write fail 2!");
-       }
+uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 new_size, uint64 old_size, uint32 flags) {
+    uint64 new_pages = (new_size - old_size) / PGSIZE;
+    uint64 new_page;
+
+    for (uint64 i = 0; i < new_pages; i++) {
+        new_page = pmem_alloc(true);  // 请求分配新的物理页面
+
+        if (flags & FLAG_READ_ONLY) {
+            set_page_read_only(new_page);
+        } else if (flags & FLAG_WRITE_ONLY) {
+            set_page_write_only(new_page);
+        }
+
+        vm_mappages(pgtbl, old_size + i * PGSIZE, new_page, PGSIZE, PTE_W | PTE_U);
+    }
+    return new_size;
+}
 ```
-
-调整为 100 次循环后，测试数据的总量约为 1.75MB，远小于 4MB 的物理内存上限。这确保了在 Buffer Cache 不进行激进回收的情况下，测试也能在内存中完整运行。
-
-而且虽然数据量减少，但 1.75MB 依然远超文件系统 Direct Mapping 覆盖的 40KB 范围。
-
-这迫使 `locate_or_add_block` 函数必须跨越边界，分配并使用一级间接索引块。如果逻辑有误，文件读写将在第 11 个块之后失败，因此感觉该测试依然能验证间接寻址逻辑的正确性。保留 `cut_len = PGSIZE * 4 + 1110` ，确保了每次写入都会产生跨块操作。这依然能检测 `inode_write_data` 中关于 block offset 和 buffer copy 的边界处理逻辑。
+解释：`uvm_heap_grow` 函数根据 `flag` 设置内存页面的访问权限（如只读或只写），并将新分配的物理页面映射到用户空间的堆中。
 
 ---
 
-## 三、目录项管理
+## 三、环境与运行方式
 
-将目录视为包含 `dentry_t` 数组的特殊文件。这一部分主要是在写 `src/kernel/fs/dentry.c`。
+本实验基于 Lab8 的内核框架，扩展了文件系统和设备操作功能，并在 QEMU 虚拟机中运行。
 
-### 目录搜索
-
-```c
-uint32 dentry_search(inode_t *ip, char *name)
-{
-    // ... 检查类型为 DIR ...
-	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
-	dentry_t *de = (dentry_t *)(buf->data);
-
-	for (uint32 i = 0; i < DENTRY_PER_BLOCK; i++, de++) {
-		if (de->name[0] == 0) continue; // 跳过无效项
-		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
-			ret = de->inode_num;
-			break;
-		}
-	}
-	buffer_put(buf);
-	return ret;
-}
+编译与运行方式：
+```bash
+make clean && make run
 ```
-* 直接读取目录的第 0 个数据块（这里目录不超过 1 块，来自README的好心）。
 
-  > 对于**INODE_TYPE_DIR**类型的inode, 我们假设它只使用1个block(index[0]记录), size只代表有效数据量 (接受空洞)
+成功后将启动 QEMU，内核启动完成后自动进入用户态 `initcode`，并根据测试程序输出对应信息。
 
-* 将数据块强制转换为 `dentry_t` 数组进行遍历。`name[0] == 0` 是我们定义的空闲/无效标记。
-
-### 目录项创建
-
-```c
-uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
-{
-    // ... 如果 index[0] 为空则分配 ...
-	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
-    
-	for (uint32 i = 0; i < DENTRY_PER_BLOCK; i++) {
-        // ... 查重逻辑 ...
-		if (free_slot == NULL) { // 记录第一个空槽位
-			free_slot = de;
-			free_off = i * sizeof(dentry_t);
-		}
-	}
-
-    // ... 填充 free_slot ...
-	memset(free_slot, 0, sizeof(dentry_t));
-	memmove(free_slot->name, name, MAXLEN_FILENAME - 1);
-	free_slot->inode_num = inode_num;
-
-	buffer_write(buf); // 落盘
-    // ... 更新 ip->size ...
-}
-```
-*   这里用首次适应策略分配空间，能复用已被删除文件留下的空闲槽位。
-*   每次新建文件后，目录项对应的 Inode 的 size 字段都会更新，确保反映当前已用空间的最大字节偏移。
-
-### Test 3 运行结果
-
-![Lab8 Test 3](pictures/lab8_test-3.png)
-*可以看到 `new_dir` 被创建在 offset 256 处，删除后再次打印目录，该项消失，证明 Dentry 增删逻辑正确。*
+在调试阶段，为了验证文件操作、中断与设备行为，内核中加入了若干调试输出（如 `sb_print()`、`buffer_print_info()` 等）。
 
 ---
 
-## 四、路径解析
+## 四、模块与代码结构
 
-实现 `path_to_inode`，支持 `/A/B/C` 格式的查找。
+### 1. 文件系统模块
+- **`device.c`**：实现设备文件操作逻辑，包括设备初始化、读取和写入操作。
+- **`dentry.c`**：实现目录项的查找、增加、删除操作，支持路径管理。
+- **`fs.c`**：实现文件的基本操作，包括读写、打开、关闭等。
 
-### 路径解析
+### 2. 系统调用模块
+- **`syscall.c`**：注册新的系统调用，并处理系统调用请求。
+- **`sysfunc.c`**：实现新的系统调用功能，如 `sys_helloworld`。
 
-```c
-static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
-{
-	inode_t *ip = inode_get(ROOT_INODE);
-	inode_lock(ip); // 从根节点开始
+### 3. 进程管理模块
+- **`proc.c`**：为每个进程增加文件表 (`open_file`) 和当前工作目录 (`cwd`) 字段，并实现相关操作。
 
-	while (1) {
-		path = get_element(path, name); // 提取当前层级名字，如 "A"
-		if (path == NULL || name[0] == 0) break;
+---
 
-        // ... find_parent_inode 的特殊返回逻辑 ...
+## 五、已知问题与待改进部分
 
-		uint32 inode_num = dentry_search(ip, name);
-        // ... 没找到则 unlock put return NULL ...
+- **目录项删除操作**：在删除目录项时存在一定的性能瓶颈，未来可以考虑优化。
+- **文件系统性能**：当前文件系统的性能较低，特别是在处理大量文件时，需要进一步的优化。
+- **系统调用机制**：虽然已实现基础的系统调用，但在高并发环境下，系统调用的效率仍然可以提高。
 
-        // 步进到下一级
-		inode_t *next = inode_get(inode_num);
-		inode_lock(next);
-		inode_unlock(ip);
-		inode_put(ip);
-		ip = next;
-	}
-    // ...
-	return ip;
-}
-```
-*   查找过程通过 get_element 函数逐级解析路径字符串。
-*   这里要交替加锁，进入下一级目录 next 之前，先对 next 加锁，再释放当前节点 ip 的锁。
+---
 
-### Test 4 运行结果
-![Lab8 Test 4](pictures/lab8_test-4.jpg)
-*系统成功根据路径 `///AABBC///aaabb/file.txt`找到了对应的 inode (num=5)，并正确读取了内容 "This is file context!"。*
+## 六、总结
+
+本实验通过在原有操作系统内核的基础上扩展文件系统、设备操作、目录管理等功能，完成了一个简单的文件管理系统。通过实现文件的基本操作、目录项管理、进程文件表和当前工作目录等模块，增强了操作系统的功能，使其更接近于一个完整的操作系统。通过这个实验，深入理解了操作系统的文件管理机制以及系统调用的实现。

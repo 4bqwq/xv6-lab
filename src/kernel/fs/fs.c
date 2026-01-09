@@ -121,3 +121,42 @@ void fs_init()
 
 	while(1);
 }
+// 文件读操作
+uint32 file_read(file_t *file, uint32 len, uint64 dst, bool is_user_dst) {
+    assert(file != NULL, "file_read: file cannot be NULL");
+    if (file->ip->type == INODE_TYPE_DATA) {
+        return inode_read(file->ip, dst, len);
+    }
+    return 0;  // 如果是目录文件，返回错误
+}
+
+// 文件写操作
+uint32 file_write(file_t *file, uint32 len, uint64 src, bool is_user_src) {
+    assert(file != NULL, "file_write: file cannot be NULL");
+    if (file->ip->type == INODE_TYPE_DATA) {
+        return inode_write(file->ip, src, len);
+    }
+    return 0;  // 如果是目录文件，返回错误
+}
+
+// 打开文件
+file_t* file_open(inode_t *ip, uint32 mode) {
+    file_t *file = file_alloc();
+    file->ip = ip;
+    file->ref = 1;
+    file->offset = 0;
+    file->readable = (mode & O_RDONLY) || (mode & O_RDWR);
+    file->writable = (mode & O_WRONLY) || (mode & O_RDWR);
+    return file;
+}
+
+// 关闭文件
+void file_close(file_t *file) {
+    if (file->ref > 0) {
+        file->ref--;
+        if (file->ref == 0) {
+            inode_release(file->ip);
+            file_free(file);
+        }
+    }
+}
