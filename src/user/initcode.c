@@ -1,7 +1,12 @@
 #include "sys.h"
 #include "help.h"
 
-static int kstrlen(const char *s)
+__attribute__((naked, section(".text.entry"))) void _start(void)
+{
+	asm volatile("j main");
+}
+
+static __attribute__((always_inline)) inline int kstrlen(const char *s)
 {
 	int n = 0;
 	while (s[n])

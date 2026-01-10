@@ -71,6 +71,7 @@ uint32 cons_read(uint32 len, uint64 dst, bool is_user_dst)
 	uint32 read_len = 0;
 	proc_t *p = myproc();
 	char c;
+	static int dbg = 0;
 
 	spinlock_acquire(&cons.lk);
 	while (read_len < len)
@@ -92,6 +93,12 @@ uint32 cons_read(uint32 len, uint64 dst, bool is_user_dst)
 			break;
 	}
 	spinlock_release(&cons.lk);
+
+	if (dbg < 5) {
+		printf("[cons_read] return %d len=%d first=%c\n", read_len, len,
+			read_len > 0 ? (char)(is_user_dst ? '\0' : *(char*)dst) : '?');
+		dbg++;
+	}
 
 	return read_len;
 }

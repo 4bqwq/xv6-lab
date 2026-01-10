@@ -190,7 +190,7 @@ int proc_exec(char *path, char **argv)
 	p->tf->a1 = sp;
 	p->tf->sp = sp;
 	p->tf->user_to_kern_epc = eh.entry;
-	printf("[exec] entry=%p sp=%p argc=%d\n", eh.entry, sp, argc);
+	printf("[exec] success path=%s argc=%d\n", path, argc);
 
 	uvm_destroy_pgtbl(old_pgtbl);
 	pmem_free((uint64)old_tf, true);
@@ -207,5 +207,5 @@ int proc_exec(char *path, char **argv)
 		n = sizeof(p->name) - 1;
 	memmove(p->name, base, n);
 
-	return argc;
+	return 0;
 }

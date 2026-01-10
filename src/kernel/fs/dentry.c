@@ -274,6 +274,13 @@ static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
 			return NULL;
 		}
 
+		// 避免对同一个 inode 重复加锁（处理 "." 或根目录的 ".."）
+		if (inode_num == ip->inode_num) {
+			if (path[0] == 0)
+				break;
+			continue;
+		}
+
 		inode_t *next = inode_get(inode_num);
 		inode_lock(next);
 		inode_unlock(ip);

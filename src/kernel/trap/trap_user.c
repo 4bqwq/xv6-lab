@@ -132,6 +132,11 @@ void trap_user_return(void)
 
     proc_t      *p  = c->proc;
     trapframe_t *tf = p->tf;
+    static int userret_dbg = 0;
+    if (userret_dbg < 5) {
+        printf("[userret] pid=%d name=%s sepc=%p\n", p->pid, p->name, tf->user_to_kern_epc);
+        userret_dbg++;
+    }
 
     // 切换前先关中断，避免切换过程中被打断
     intr_off();
