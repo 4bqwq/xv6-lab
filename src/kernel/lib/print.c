@@ -1,8 +1,10 @@
 /* 标准输出和报错机制 */
 
 #include "mod.h"
+#include <stdarg.h>
 
 static char digits[] = "0123456789abcdef";
+extern volatile int panicked;
 
 /* printf的自旋锁 */
 static spinlock_t print_lk;
@@ -60,7 +62,56 @@ static void printptr(uint64 x)
 */
 void printf(const char *fmt, ...)
 {
+    va_list ap;
+    int c;
+    char *s;
 
+    if (panicked)
+        return;
+
+    spinlock_acquire(&print_lk);
+    va_start(ap, fmt);
+    for (int i = 0; (c = fmt[i] & 0xff) != 0; i++)
+    {
+        if (c != '%') {
+            uart_putc_sync(c);
+            continue;
+        }
+        c = fmt[++i] & 0xff;
+        if (c == 0)
+            break;
+        switch (c)
+        {
+        case 'd':
+            printint(va_arg(ap, int), 10, 1);
+            break;
+        case 'x':
+            printint(va_arg(ap, int), 16, 0);
+            break;
+        case 'p':
+            printptr(va_arg(ap, uint64));
+            break;
+        case 'c':
+            uart_putc_sync(va_arg(ap, int));
+            break;
+        case 's':
+            s = va_arg(ap, char*);
+            if (s == NULL)
+                s = "(null)";
+            while (*s)
+                uart_putc_sync(*s++);
+            break;
+        case '%':
+            uart_putc_sync('%');
+            break;
+        default:
+            uart_putc_sync('%');
+            uart_putc_sync(c);
+            break;
+        }
+    }
+    va_end(ap);
+    spinlock_release(&print_lk);
 }
 
 
@@ -80,5 +131,6 @@ void panic(const char *s)
 /* 如果不满足条件, 则调用panic */
 void assert(bool condition, const char *warning)
 {
-
+    if (!condition)
+        panic(warning);
 }

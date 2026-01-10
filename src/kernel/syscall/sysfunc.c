@@ -118,7 +118,7 @@ uint64 sys_brk()
 
     if (new_heap_top > old_heap_top) {
         uint32 len = (uint32)(new_heap_top - old_heap_top);
-        uint64 grown_top = uvm_heap_grow(p->pgtbl, old_heap_top, len);
+        uint64 grown_top = uvm_heap_grow(p->pgtbl, old_heap_top, len, PTE_R | PTE_W);
         if (grown_top == (uint64)-1) return (uint64)-1;
         p->heap_top = grown_top;
         return grown_top;
@@ -383,3 +383,229 @@ uint64 sys_flush_buffer()
     return (uint64)buffer_freemem(n);
 }
 
+static file_t *fd2file(proc_t *p, uint32 fd)
+{
+    if (fd >= N_OPEN_FILE_PER_PROC)
+        return NULL;
+    return p->open_file[fd];
+}
+
+uint64 sys_exec()
+{
+    proc_t *p = myproc();
+    char path[MAXLEN_FILENAME];
+    uint64 uargv;
+
+    arg_str(0, path, MAXLEN_FILENAME);
+    arg_uint64(1, &uargv);
+
+    char argv_buf[ELF_MAXARGS][ELF_MAXARG_LEN];
+    char *argv[ELF_MAXARGS + 1];
+    memset(argv_buf, 0, sizeof(argv_buf));
+    memset(argv, 0, sizeof(argv));
+
+    for (int i = 0; i < ELF_MAXARGS; i++) {
+        uint64 uarg = 0;
+        uvm_copyin(p->pgtbl, (uint64)&uarg, uargv + i * sizeof(uint64), sizeof(uint64));
+        if (uarg == 0) {
+            argv[i] = NULL;
+            break;
+        }
+        uvm_copyin_str(p->pgtbl, (uint64)argv_buf[i], uarg, ELF_MAXARG_LEN - 1);
+        argv[i] = argv_buf[i];
+    }
+
+    return (uint64)proc_exec(path, argv);
+}
+
+uint64 sys_open()
+{
+    proc_t *p = myproc();
+    char path[MAXLEN_FILENAME];
+    uint32 mode;
+
+    arg_str(0, path, MAXLEN_FILENAME);
+    arg_uint32(1, &mode);
+
+    file_t *file = file_open(path, mode);
+    if (file == NULL)
+        return (uint64)-1;
+
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (p->open_file[i] == NULL) {
+            p->open_file[i] = file;
+            return (uint64)i;
+        }
+    }
+    file_close(file);
+    return (uint64)-1;
+}
+
+uint64 sys_close()
+{
+    proc_t *p = myproc();
+    uint32 fd;
+    arg_uint32(0, &fd);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    p->open_file[fd] = NULL;
+    file_close(f);
+    return 0;
+}
+
+uint64 sys_read()
+{
+    proc_t *p = myproc();
+    uint32 fd, len;
+    uint64 uaddr;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &len);
+    arg_uint64(2, &uaddr);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    return (uint64)file_read(f, len, uaddr, true);
+}
+
+uint64 sys_write()
+{
+    proc_t *p = myproc();
+    uint32 fd, len;
+    uint64 uaddr;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &len);
+    arg_uint64(2, &uaddr);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    return (uint64)file_write(f, len, uaddr, true);
+}
+
+uint64 sys_lseek()
+{
+    proc_t *p = myproc();
+    uint32 fd, offset, flag;
+    arg_uint32(0, &fd);
+    arg_uint32(1, &offset);
+    arg_uint32(2, &flag);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    return (uint64)file_lseek(f, offset, flag);
+}
+
+uint64 sys_dup()
+{
+    proc_t *p = myproc();
+    uint32 fd;
+    arg_uint32(0, &fd);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (p->open_file[i] == NULL) {
+            p->open_file[i] = file_dup(f);
+            return (uint64)i;
+        }
+    }
+    return (uint64)-1;
+}
+
+uint64 sys_fstat()
+{
+    proc_t *p = myproc();
+    uint32 fd;
+    uint64 uaddr;
+    arg_uint32(0, &fd);
+    arg_uint64(1, &uaddr);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    return (uint64)file_get_stat(f, uaddr);
+}
+
+uint64 sys_get_dentries()
+{
+    proc_t *p = myproc();
+    uint32 fd, len;
+    uint64 uaddr;
+    arg_uint32(0, &fd);
+    arg_uint64(1, &uaddr);
+    arg_uint32(2, &len);
+
+    file_t *f = fd2file(p, fd);
+    if (f == NULL)
+        return (uint64)-1;
+    return (uint64)file_read(f, len, uaddr, true);
+}
+
+uint64 sys_mkdir()
+{
+    char path[MAXLEN_FILENAME];
+    arg_str(0, path, MAXLEN_FILENAME);
+
+    inode_t *ip = path_create_inode(path, INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+    if (ip == NULL)
+        return (uint64)-1;
+    inode_put(ip);
+    return 0;
+}
+
+uint64 sys_chdir()
+{
+    proc_t *p = myproc();
+    char path[MAXLEN_FILENAME];
+    arg_str(0, path, MAXLEN_FILENAME);
+
+    inode_t *ip = path_to_inode(path);
+    if (ip == NULL)
+        return (uint64)-1;
+    inode_lock(ip);
+    if (ip->disk_info.type != INODE_TYPE_DIR) {
+        inode_unlock(ip);
+        inode_put(ip);
+        return (uint64)-1;
+    }
+    inode_unlock(ip);
+
+    if (p->cwd)
+        inode_put(p->cwd);
+    p->cwd = ip;
+    return 0;
+}
+
+uint64 sys_print_cwd()
+{
+    proc_t *p = myproc();
+    if (p->cwd == NULL)
+        return (uint64)-1;
+    char path[256];
+    uint32 off = inode_to_path(p->cwd, path, sizeof(path));
+    if (off == (uint32)-1)
+        return (uint64)-1;
+    printf("%s\n", path + off);
+    return 0;
+}
+
+uint64 sys_link()
+{
+    char old_path[MAXLEN_FILENAME], new_path[MAXLEN_FILENAME];
+    arg_str(0, old_path, MAXLEN_FILENAME);
+    arg_str(1, new_path, MAXLEN_FILENAME);
+    return (uint64)path_link(old_path, new_path);
+}
+
+uint64 sys_unlink()
+{
+    char path[MAXLEN_FILENAME];
+    arg_str(0, path, MAXLEN_FILENAME);
+    return (uint64)path_unlink(path);
+}

@@ -17,36 +17,6 @@ extern void trap_user_return();
 // in mem/kvm.c
 extern void kvm_clone_kernel_map(pgtbl_t dst);
 
-// 进程结构体数组 + 第一个用户进程的指针
-typedef struct proc {
-    file_t *open_file[N_FILE];  // 文件指针表
-    inode_t *cwd;               // 当前工作目录
-    uint64 heap_start;          // 堆的起始位置
-    // 其他现有字段
-} proc_t;
-
-// 初始化进程的 open_file 和 cwd 字段
-void proc_init(proc_t *p) {
-    for (int i = 0; i < N_FILE; i++) {
-        p->open_file[i] = NULL;  // 设置所有文件指针为 NULL
-    }
-    p->cwd = root_inode();      // 设置 cwd 为根目录的 inode
-}
-
-// 设置进程的工作目录
-void proc_set_cwd(proc_t *p, inode_t *new_cwd) {
-    p->cwd = new_cwd;
-}
-
-// 销毁进程时清理 open_file 和 cwd 字段
-void proc_free(proc_t *p) {
-    for (int i = 0; i < N_FILE; i++) {
-        if (p->open_file[i]) {
-            file_close(p->open_file[i]);  // 关闭每个打开的文件
-        }
-    }
-    p->cwd = NULL;  // 清除 cwd
-}
 /* ------------本地变量----------- */
 
 // 进程结构体数组 + 第一个用户进程的指针
@@ -56,9 +26,6 @@ static proc_t *proczero;
 // 全局pid + 保护它的锁
 static int global_pid;
 static spinlock_t pid_lk;
-
-static spinlock_t fsinit_lk;
-static int fs_inited = 0;
 
 /* 获取一个pid */
 static int __attribute__((unused)) alloc_pid()
@@ -77,39 +44,6 @@ static void __attribute__((unused)) proc_return()
     proc_t *p = myproc();
     assert(p != NULL, "proc_return: no current proc");
     spinlock_release(&p->lk);
-    
-    // 只允许 proczero 第一次进入 proc_return 时初始化文件系统
-    if (myproc() == proczero) {
-        spinlock_acquire(&fsinit_lk);
-        
-        if (fs_inited == 0) {
-            // 当前 CPU 抢到了初始化权
-            fs_inited = 1; // 标记为：正在初始化
-            spinlock_release(&fsinit_lk);
-
-            // 在无锁状态下安全执行耗时操作
-            fs_init();
-
-            // 执行完毕，标记为完成
-            spinlock_acquire(&fsinit_lk);
-            fs_inited = 2; // 标记为：初始化完成
-            spinlock_release(&fsinit_lk);
-        } 
-        else if (fs_inited == 1) {
-            while (fs_inited != 2) {
-                spinlock_release(&fsinit_lk);
-                // 稍微松手一会，避免死锁
-                for(int i=0; i<100; i++); 
-                spinlock_acquire(&fsinit_lk);
-            }
-            spinlock_release(&fsinit_lk);
-        } 
-        else {
-            // fs_inited == 2，直接通过
-            spinlock_release(&fsinit_lk);
-        }
-    }
- 
     trap_user_return();
 }
 
@@ -126,7 +60,6 @@ void proc_init()
     proczero = NULL;
     global_pid = 1;
     spinlock_init(&pid_lk, "pid");
-    spinlock_init(&fsinit_lk, "fsinit");
 }
 
 /* 
@@ -155,6 +88,9 @@ proc_t *proc_alloc()
         p->heap_top = 0;
         p->ustack_npage = 0;
         p->mmap = NULL;
+        p->cwd = NULL;
+        for (int j = 0; j < N_OPEN_FILE_PER_PROC; j++)
+            p->open_file[j] = NULL;
         memset(p->name, 0, sizeof(p->name));
 
         // 内核栈采用固定虚拟地址，缺页时补充物理页并清空栈空间
@@ -195,6 +131,17 @@ proc_t *proc_alloc()
 void proc_free(proc_t *p)
 {
     assert(spinlock_holding(&p->lk), "proc_free: lock not held");
+
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (p->open_file[i]) {
+            file_close(p->open_file[i]);
+            p->open_file[i] = NULL;
+        }
+    }
+    if (p->cwd) {
+        inode_put(p->cwd);
+        p->cwd = NULL;
+    }
 
     // 回收用户页表与其中的用户物理页、trapframe
     bool tf_recycled = false;
@@ -308,7 +255,7 @@ static void __attribute__((unused)) run_pgtbl_checks(proc_t *p)
         goto cleanup;
     }
 
-    uint64 new_top = uvm_heap_grow(p->pgtbl, old_heap_top, (uint32)heap_grow_len);
+    uint64 new_top = uvm_heap_grow(p->pgtbl, old_heap_top, (uint32)heap_grow_len, PTE_R | PTE_W);
     if (new_top == (uint64)-1)
     {
         printf("[pgtbl-check] heap grow fail\n");
@@ -461,6 +408,12 @@ void proc_make_first()
     proc_t *p = proc_alloc();
     assert(p != NULL, "proc_make_first: no free proc");
     proczero = p;
+    cpu_t *c = mycpu();
+    c->proc = p;
+
+    spinlock_release(&p->lk);
+    fs_init();
+    spinlock_acquire(&p->lk);
 
     // ---------- 1. 分配并映射用户代码+数据页 ----------
     // 空出最低的 4KB (0 ~ PGSIZE-1)，因此代码从 PGSIZE 开始
@@ -504,12 +457,17 @@ void proc_make_first()
     // ---------- 8. 初始化 mmap 链表 ----------
     p->mmap = 0;  // 初始时 mmap 链表为空
 
+    // ---------- 9. 设置工作目录和标准文件 ----------
+    p->cwd = path_to_inode("/");
+    p->open_file[0] = file_open("/dev/stdin", FILE_OPEN_READ);
+    p->open_file[1] = file_open("/dev/stdout", FILE_OPEN_WRITE);
+    p->open_file[2] = file_open("/dev/stderr", FILE_OPEN_WRITE);
+
     // ---------- 9. 准备调度 ----------
     p->state = RUNNABLE;
     spinlock_release(&p->lk);
 
     // ---------- 10. 把当前 CPU 绑定到 proczero ----------
-    cpu_t *c = mycpu();
     c->proc = p;
 }
 
@@ -565,6 +523,12 @@ int proc_fork()
     // 复制用户页表和其中的用户物理页
     uvm_copy_pgtbl(parent->pgtbl, child->pgtbl,
                    parent->heap_top, parent->ustack_npage, child->mmap);
+
+    child->cwd = parent->cwd ? inode_dup(parent->cwd) : NULL;
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (parent->open_file[i])
+            child->open_file[i] = file_dup(parent->open_file[i]);
+    }
 
     // 子进程就绪
     child->state = RUNNABLE;
@@ -630,6 +594,17 @@ void proc_exit(int exit_code)
     // 记录退出状态
     spinlock_acquire(&p->lk);
     p->exit_code = exit_code;
+
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (p->open_file[i]) {
+            file_close(p->open_file[i]);
+            p->open_file[i] = NULL;
+        }
+    }
+    if (p->cwd) {
+        inode_put(p->cwd);
+        p->cwd = NULL;
+    }
 
     // 处理过继
     proc_reparent(p);

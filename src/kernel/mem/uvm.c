@@ -11,19 +11,6 @@ static uint64 walk_user_va(pgtbl_t pgtbl, uint64 va)
     return (uint64)PTE_TO_PA(*pte);  // 页框物理地址（页内偏移还要自己加）
 }
 
-void set_page_read_only(uint64 page) {
-    // Assuming PTE_V is a valid flag and PTE_R is for read-only pages
-    pte_t *pte = get_pte_for_page(page);
-    *pte &= ~PTE_W;  // Remove write permission
-    *pte |= PTE_R;   // Set read-only permission
-}
-void set_page_write_only(uint64 page) {
-    // Assuming PTE_V is a valid flag and PTE_W is for write-only pages
-    pte_t *pte = get_pte_for_page(page);
-    *pte &= ~PTE_R;  // Remove read permission
-    *pte |= PTE_W;   // Set write-only permission
-}
-
 /*--------------------part-1: 关于内核空间<->用户空间的数据传递--------------------*/
 
 // 用户态地址空间[src, src+len) 拷贝至 内核态地址空间[dst, dst+len)
@@ -345,27 +332,26 @@ bool uvm_munmap(uint64 begin, uint32 npages)
 /*------------------part-3: 用户空间heap和stack管理相关------------------*/
 
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
-uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 new_size, uint64 old_size, uint32 flags) {
-    uint64 new_pages = (new_size - old_size) / PGSIZE;
-    uint64 new_page;
+uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len, int flag) {
+    if (len == 0)
+        return cur_heap_top;
 
-    for (uint64 i = 0; i < new_pages; i++) {
-        // Allocate a new page for the heap
-        new_page = pmem_alloc(true);  // Requesting page allocation
+    uint64 new_heap_top = cur_heap_top + len;
+    if (new_heap_top >= TRAPFRAME)
+        return (uint64)-1;
 
-        // Handle memory access permissions based on flags
-        if (flags & FLAG_READ_ONLY) {
-            // Set page to read-only
-            set_page_read_only(new_page);
-        } else if (flags & FLAG_WRITE_ONLY) {
-            // Set page to write-only
-            set_page_write_only(new_page);
-        }
+    uint64 va_start = PGROUNDUP(cur_heap_top);
+    uint64 va_end = PGROUNDUP(new_heap_top);
+    int perm = flag | PTE_U;
 
-        // Map new page to user space in the page table (assuming the flag is applied)
-        vm_mappages(pgtbl, old_size + i * PGSIZE, new_page, PGSIZE, PTE_W | PTE_U);  // Using correct mapping function and permissions
+    for (uint64 va = va_start; va < va_end; va += PGSIZE) {
+        uint64 pa = (uint64)pmem_alloc(false);
+        if (pa == 0)
+            return (uint64)-1;
+        vm_mappages(pgtbl, va, pa, PGSIZE, perm);
     }
-    return new_size;
+
+    return new_heap_top;
 }
 
 

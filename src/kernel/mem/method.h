@@ -39,7 +39,7 @@ void uvm_copyin_str(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 maxlen);
 void uvm_show_mmaplist(mmap_region_t *mmap);
 uint64 uvm_mmap(uint64 begin, uint32 npages, int perm);
 bool uvm_munmap(uint64 begin, uint32 npages);
-uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len);
+uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len, int flag);
 uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len);
 uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr);
 void uvm_destroy_pgtbl(pgtbl_t pgtbl);
@@ -51,5 +51,4 @@ void mmap_init();
 
 mmap_region_t *mmap_region_alloc();
 void mmap_region_free(mmap_region_t *mmap);
-void mmap_show_nodelist();\
-
+void mmap_show_nodelist();

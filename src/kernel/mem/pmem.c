@@ -82,23 +82,13 @@ void pmem_free(uint64 page, bool in_kernel)
 
 void pmem_stat(uint32 *free_pages_in_kernel, uint32 *free_pages_in_user) 
 {
-    *free_pages_in_kernel = 0;
-    *free_pages_in_user = 0;
+    assert(free_pages_in_kernel && free_pages_in_user, "pmem_stat: null ptr");
 
-    // Count free pages in kernel region
-    page_node_t *node = kern_region.list_head.next;
-    while (node != NULL) {
-        (*free_pages_in_kernel)++;
-        node = node->next;
-    }
+    spinlock_acquire(&kern_region.lk);
+    *free_pages_in_kernel = kern_region.allocable;
+    spinlock_release(&kern_region.lk);
 
-    // Count free pages in user region
-    node = user_region.list_head.next;
-    while (node != NULL) {
-        (*free_pages_in_user)++;
-        node = node->next;
-        }
-}
-        node = node->next;
-    }
+    spinlock_acquire(&user_region.lk);
+    *free_pages_in_user = user_region.allocable;
+    spinlock_release(&user_region.lk);
 }

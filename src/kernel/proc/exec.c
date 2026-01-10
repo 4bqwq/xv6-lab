@@ -1,49 +1,38 @@
 #include "mod.h"
 
-// 加载 ELF 文件的段
-static void load_segment(inode_t *ip, pgtbl_t pgtbl, uint64 seg_start, uint64 va_start, uint32 len) {
-    assert(va_start % PGSIZE == 0, "load_segment: va aligned!");
+/*
+	将ELF文件中的segment放入内存中制定位置
+	inode逻辑区域: [seg_start, seg_start + len)
+	进程地址空间: [va_start, va_start + len), 对应的物理页是存在的
+*/
+static void load_segment(inode_t *ip, pgtbl_t pgtbl, 
+	uint64 seg_start, uint64 va_start, uint32 len)
+{
+	assert(va_start % PGSIZE == 0, "load_segment: va aligned!");
 
-    pte_t *pte;
-    uint64 pa;
-    uint32 read_len, cut_len;
+	pte_t *pte;
+	uint64 pa;
+	uint32 read_len, cut_len;
 
-    // 循环加载 ELF 文件段
-    for (read_len = 0; read_len < len; read_len += PGSIZE) {
-        // 获取当前虚拟地址对应的物理页
-        pte = vm_getpte(pgtbl, va_start + read_len, false);
-        pa = PTE_TO_PA(*pte);
+	for (read_len = 0; read_len < len; read_len += PGSIZE)
+	{
+		/* 获取物理内存地址 */
+		pte = vm_getpte(pgtbl, va_start + read_len, false);
+		pa = PTE_TO_PA(*pte);
+		assert(pa != 0, "load_segment: invalid pa!");
 
-        // 如果没有映射，分配物理内存并映射到用户空间
-        if (pa == 0) {
-            pa = pmem_alloc(true);  // 请求分配一个新的物理页面
-            vm_mappages(pgtbl, va_start + read_len, pa, PGSIZE, PTE_W | PTE_U);  // 设置页面权限
-        }
-
-        // 从 ELF 文件段读取数据到分配的内存
-        cut_len = min(PGSIZE, len - read_len);
-        inode_read(ip, va_start + read_len, cut_len);
-    }
+		/* 读入segment的一部分 */
+		cut_len = MIN(len - read_len, PGSIZE);
+		if (inode_read_data(ip, (uint32)seg_start + read_len, cut_len, (void*)pa, false) != cut_len)
+			panic("load_segment: read fail!");
+	}
 }
-
-// 处理 ELF 文件加载进新进程
-int exec_elf(inode_t *elf_inode, proc_t *new_proc) {
-    // 为进程分配页表并设置内存映射
-    pgtbl_t pgtbl = alloc_page_table();  // 为进程分配新的页表
-    load_segment(elf_inode, pgtbl, 0, new_proc->heap_start, elf_inode->size);  // 加载 ELF 段
-    
-    // 设置进程的堆、栈等
-    new_proc->heap_start += elf_inode->size;
-    
-    return 0;  // 返回成功
-}
-
 
 /* 将程序的代码区和数据区读入用户堆中, 返回new_heap_top */
 static uint64 prepare_heap(pgtbl_t new_pgtbl, inode_t *ip, elf_header_t *eh)
 {
 	program_header_t ph;
-	uint64 new_heap_top = USER_BASE, old_heap_top = USER_BASE;
+	uint64 new_heap_top = 0, old_heap_top = 0;
 	
 	for (uint32 off = eh->ph_off; off < eh->ph_off + eh->ph_ent_num * sizeof(ph); off += sizeof(ph))
 	{
@@ -63,9 +52,14 @@ static uint64 prepare_heap(pgtbl_t new_pgtbl, inode_t *ip, elf_header_t *eh)
 		if (ph.va % PGSIZE != 0)
 			return -1;
 		
+		int perm = PTE_U;
+		if (ph.flags & ELF_PROG_FLAG_READ)  perm |= PTE_R;
+		if (ph.flags & ELF_PROG_FLAG_WRITE) perm |= PTE_W;
+		if (ph.flags & ELF_PROG_FLAG_EXEC)  perm |= PTE_X;
+
 		// 用户堆生长
 		new_heap_top = uvm_heap_grow(new_pgtbl, old_heap_top,
-						ph.va + ph.mem_size - old_heap_top, PTE_R | PTE_X);
+						ph.va + ph.mem_size - old_heap_top, perm);
 		if (new_heap_top != ph.va + ph.mem_size)
 			return -1;
 		old_heap_top = new_heap_top;
@@ -94,6 +88,9 @@ static uint64 prepare_stack(pgtbl_t new_pgtbl, char **argv, int *arg_count)
 			return -1;
 		
 		arg_len = strlen(argv[argc]) + 1;
+		if (arg_len > ELF_MAXARG_LEN)
+			return -1;
+
 		sp -= ALIGN_UP(arg_len, 16);
 		if (sp < sp_base)
 			return -1;
@@ -116,6 +113,15 @@ static uint64 prepare_stack(pgtbl_t new_pgtbl, char **argv, int *arg_count)
 	return sp;
 }
 
+static void free_mmap_list(mmap_region_t *head)
+{
+	while (head) {
+		mmap_region_t *n = head->next;
+		mmap_region_free(head);
+		head = n;
+	}
+}
+
 /*
 	执行ELF文件
 	输入路径和参数
@@ -123,5 +129,82 @@ static uint64 prepare_stack(pgtbl_t new_pgtbl, char **argv, int *arg_count)
 */
 int proc_exec(char *path, char **argv)
 {
-	
+	proc_t *p = myproc();
+	trapframe_t *new_tf = (trapframe_t*)pmem_alloc(true);
+	if (new_tf == NULL)
+		return -1;
+	memset(new_tf, 0, PGSIZE);
+
+	pgtbl_t new_pgtbl = proc_pgtbl_init((uint64)new_tf);
+
+	inode_t *ip = path_to_inode(path);
+	if (ip == NULL) {
+		pmem_free((uint64)new_tf, true);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	inode_lock(ip);
+
+	elf_header_t eh;
+	if (inode_read_data(ip, 0, sizeof(eh), &eh, false) != sizeof(eh) || eh.magic != ELF_MAGIC) {
+		inode_unlock(ip);
+		inode_put(ip);
+		pmem_free((uint64)new_tf, true);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	uint64 new_heap_top = prepare_heap(new_pgtbl, ip, &eh);
+	if (new_heap_top == (uint64)-1) {
+		inode_unlock(ip);
+		inode_put(ip);
+		pmem_free((uint64)new_tf, true);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	inode_unlock(ip);
+	inode_put(ip);
+
+	int argc = 0;
+	uint64 sp = prepare_stack(new_pgtbl, argv, &argc);
+	if (sp == (uint64)-1) {
+		pmem_free((uint64)new_tf, true);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	free_mmap_list(p->mmap);
+	p->mmap = NULL;
+
+	pgtbl_t old_pgtbl = p->pgtbl;
+	trapframe_t *old_tf = p->tf;
+
+	p->pgtbl = new_pgtbl;
+	p->tf = new_tf;
+	p->heap_top = new_heap_top;
+	p->ustack_npage = 1;
+
+	p->tf->a0 = argc;
+	p->tf->a1 = sp;
+	p->tf->sp = sp;
+	p->tf->user_to_kern_epc = eh.entry;
+
+	uvm_destroy_pgtbl(old_pgtbl);
+	pmem_free((uint64)old_tf, true);
+
+	/* 更新进程名 */
+	const char *base = path;
+	for (const char *s = path; *s; s++) {
+		if (*s == '/' && *(s + 1) != 0)
+			base = s + 1;
+	}
+	memset(p->name, 0, sizeof(p->name));
+	uint32 n = strlen(base);
+	if (n >= sizeof(p->name))
+		n = sizeof(p->name) - 1;
+	memmove(p->name, base, n);
+
+	return argc;
 }

@@ -96,8 +96,8 @@ enum proc_state
 // 进程
 typedef struct proc
 {
-    int pid;             // 标识符
-    char name[16];       // 进程名称
+    int pid;                    // 标识符
+    char name[PROC_NAME_LEN];   // 进程名称
 
     spinlock_t lk;         // 自旋锁, 保护下面4个字段
     enum proc_state state; // 进程状态
@@ -115,7 +115,7 @@ typedef struct proc
     context_t ctx;       // 内核态进程上下文
     
     inode_t *cwd;
-    file_t *open_file(N_OPEN_FILE_PER_PROC);
+    file_t *open_file[N_OPEN_FILE_PER_PROC];
 } proc_t;
 
 // 系统中最多同时存在N_PROC个进程
