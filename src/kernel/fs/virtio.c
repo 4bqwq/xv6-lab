@@ -52,8 +52,10 @@ void virtio_disk_init()
     if (max < VIRTIO_NUM)
         panic("virtio disk max queue too short");
     *R(VIRTIO_MMIO_QUEUE_NUM) = VIRTIO_NUM;
+    *R(VIRTIO_MMIO_QUEUE_ALIGN) = PGSIZE;
     memset(disk.pages, 0, sizeof(disk.pages));
     *R(VIRTIO_MMIO_QUEUE_PFN) = ((uint64)disk.pages) >> 12;
+    *R(VIRTIO_MMIO_QUEUE_READY) = 1;
 
     // desc = pages -- num * VRingDesc
     // avail = pages + 0x40 -- 2 * uint16, then num * uint16
@@ -203,9 +205,16 @@ void virtio_disk_rw(buffer_t *b, bool write)
 
     *R(VIRTIO_MMIO_QUEUE_NOTIFY) = 0; // value is queue number
 
-    // Wait for virtio_disk_intr() to say request has finished.
-    while (b->disk == true)
-        proc_sleep(b, &disk.vdisk_lock);
+    // Wait for device complete (poll used ring under lock)
+    while (b->disk) {
+        if (disk.used_idx != disk.used->id) {
+            int id = disk.used->elems[disk.used_idx % VIRTIO_NUM].id;
+            if (disk.info[id].status != 0)
+                panic("virtio_disk_intr status");
+            disk.info[id].b->disk = false;
+            disk.used_idx++;
+        }
+    }
 
     disk.info[idx[0]].b = 0;
     free_chain(idx[0]);
@@ -218,9 +227,9 @@ void virtio_disk_intr()
 {
     spinlock_acquire(&disk.vdisk_lock);
 
-    while ((disk.used_idx % VIRTIO_NUM) != (disk.used->id % VIRTIO_NUM))
+    while (disk.used_idx != disk.used->id)
     {
-        int id = disk.used->elems[disk.used_idx].id;
+        int id = disk.used->elems[disk.used_idx % VIRTIO_NUM].id;
 
         if (disk.info[id].status != 0)
             panic("virtio_disk_intr status");
@@ -228,7 +237,7 @@ void virtio_disk_intr()
         disk.info[id].b->disk = false; // disk is done with buf
         proc_wakeup(disk.info[id].b);
 
-        disk.used_idx = (disk.used_idx + 1) % VIRTIO_NUM;
+        disk.used_idx++;
     }
     *R(VIRTIO_MMIO_INTERRUPT_ACK) = *R(VIRTIO_MMIO_INTERRUPT_STATUS) & 0x3;
 

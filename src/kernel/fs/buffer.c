@@ -48,6 +48,7 @@ static void insert_node(buffer_node_t *node, bool insert_active, bool insert_nex
 */
 void buffer_init()
 {
+    printf("buffer_init begin\n");
     // 初始化全局的lk_buf_cache + buf_head_active + buf_head_inactive
     spinlock_init(&lk_buf_cache, "buf_cache");
 
@@ -73,6 +74,7 @@ void buffer_init()
         node->buf.disk = false;
         sleeplock_init(&node->buf.slk, "buffer");
     }
+    printf("buffer_init end\n");
 }
 
 /* 磁盘读取: block -> buf */

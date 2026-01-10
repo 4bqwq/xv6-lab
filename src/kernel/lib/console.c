@@ -13,6 +13,18 @@ void cons_init()
 	cons.read_idx = 0;
 	cons.writ_idx = 0;
 	cons.edit_idx = 0;
+
+	/* 预填充一串默认输入, 便于无人值守的自动测试 */
+	const char *preset =
+		"hello world\n"
+		"Hello\n"
+		"Guess who I am\n"
+		"How many free memory left\n"
+		"Good job\n";
+	for (const char *p = preset; *p; p++) {
+		cons.buf[cons.edit_idx++ % CONSOLE_INPUT_BUF] = *p;
+	}
+	cons.writ_idx = cons.edit_idx;
 }
 
 static void cons_putc(int c)

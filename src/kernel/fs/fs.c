@@ -225,13 +225,16 @@ void sb_print()
 /* 文件系统初始化 */
 void fs_init()
 {
+    printf("fs_init: begin\n");
     // 1) buffer 系统
     buffer_init();
 
     // 2) 初始化inode_cache
+    printf("fs_init: inode_init\n");
     inode_init();
 
     // 3) 读入超级块
+    printf("fs_init: read superblock\n");
     buffer_t *buf = buffer_get(FS_SB_BLOCK);
     assert(buf && buf->data, "fs_init: failed to read superblock");
     super_block_t *disk_sb = (super_block_t *)buf->data;
@@ -243,4 +246,5 @@ void fs_init()
 
     file_init();
     device_init();
+    printf("fs_init: end\n");
 }

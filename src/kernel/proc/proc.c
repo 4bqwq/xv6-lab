@@ -43,6 +43,7 @@ static void __attribute__((unused)) proc_return()
 {
     proc_t *p = myproc();
     assert(p != NULL, "proc_return: no current proc");
+    printf("proc_return: pid=%d\n", p->pid);
     spinlock_release(&p->lk);
     trap_user_return();
 }
@@ -370,6 +371,17 @@ cleanup:
     printf("[pgtbl-check] end\n");
 }
 
+void proc_fs_init()
+{
+    assert(proczero != NULL, "proc_fs_init: proczero null");
+    spinlock_acquire(&proczero->lk);
+    proczero->cwd = path_to_inode("/");
+    proczero->open_file[0] = file_open("/dev/stdin", FILE_OPEN_READ);
+    proczero->open_file[1] = file_open("/dev/stdout", FILE_OPEN_WRITE);
+    proczero->open_file[2] = file_open("/dev/stderr", FILE_OPEN_WRITE);
+    spinlock_release(&proczero->lk);
+}
+
 // 获得一个初始化过的用户页表
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
@@ -410,10 +422,6 @@ void proc_make_first()
     proczero = p;
     cpu_t *c = mycpu();
     c->proc = p;
-
-    spinlock_release(&p->lk);
-    fs_init();
-    spinlock_acquire(&p->lk);
 
     // ---------- 1. 分配并映射用户代码+数据页 ----------
     // 空出最低的 4KB (0 ~ PGSIZE-1)，因此代码从 PGSIZE 开始
@@ -456,12 +464,6 @@ void proc_make_first()
 
     // ---------- 8. 初始化 mmap 链表 ----------
     p->mmap = 0;  // 初始时 mmap 链表为空
-
-    // ---------- 9. 设置工作目录和标准文件 ----------
-    p->cwd = path_to_inode("/");
-    p->open_file[0] = file_open("/dev/stdin", FILE_OPEN_READ);
-    p->open_file[1] = file_open("/dev/stdout", FILE_OPEN_WRITE);
-    p->open_file[2] = file_open("/dev/stderr", FILE_OPEN_WRITE);
 
     // ---------- 9. 准备调度 ----------
     p->state = RUNNABLE;
@@ -691,6 +693,8 @@ void proc_wakeup(void *sleep_space)
 {
     for (int i = 0; i < N_PROC; i++) {
         proc_t *p = &proc_list[i];
+        if (spinlock_holding(&p->lk))
+            continue;
         spinlock_acquire(&p->lk);
         if (p->state == SLEEPING && p->sleep_space == sleep_space)
             p->state = RUNNABLE;
@@ -730,6 +734,7 @@ void proc_scheduler()
             proc_t *p = &proc_list[i];
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
+                printf("scheduler: run pid=%d\n", p->pid);
                 // 调试：检查保存的内核上下文是否合法，防止栈/上下文被破坏后继续调度导致不可预期的跳转
                 if (!(p->ctx.sp > p->kstack && p->ctx.sp <= p->kstack + PGSIZE)) {
                     printf("[sched-debug] bad ctx.sp pid=%d sp=%p kstack=[%p, %p)\n",

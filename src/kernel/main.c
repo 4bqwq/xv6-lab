@@ -17,14 +17,27 @@ int main()
         printf("cpu %d is booting!\n", cpuid);
 
         pmem_init();
+        printf("pmem init done\n");
         kvm_init();
+        printf("kvm init done\n");
         kvm_inithart();
+        printf("kvm_inithart done\n");
         mmap_init();
+        printf("mmap init done\n");
         virtio_disk_init();
+        printf("virtio init done\n");
         proc_init();
+        printf("proc_init done\n");
         proc_make_first();
+        printf("proc_make_first done\n");
         trap_kernel_init();
+        printf("trap_kernel_init done\n");
         trap_kernel_inithart();
+        printf("trap_kernel_inithart done\n");
+        intr_on();
+        fs_init();
+        proc_fs_init();
+        printf("fs_init done\n");
 
         __sync_synchronize();
         started = 1;
@@ -44,4 +57,3 @@ int main()
     panic("main: never back!");
     return 0;
 }
-

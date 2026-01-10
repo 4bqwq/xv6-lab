@@ -39,9 +39,6 @@ void trap_user_handler(void)
     assert((sstatus & SSTATUS_SPP) == 0, "trap_user_handler: not from user mode");
     assert(intr_get() == 0, "trap_user_handler: interrupts enabled");
 
-    // 既然已经在内核中了，后续的 trap 直接走 kernel_vector
-    w_stvec((uint64)kernel_vector);
-
     cpu_t *c = mycpu();
     assert(c && c->proc && c->proc->tf, "trap_user_handler: no current proc");
     proc_t      *p  = c->proc;
@@ -128,9 +125,6 @@ void trap_user_handler(void)
 // 内核态返回用户态（切回 U-mode）
 void trap_user_return(void)
 {
-    //trial
-    //printf("trap_user_return: enter\n");
-    
     cpu_t *c = mycpu();
     assert(c && c->proc && c->proc->tf, "trap_user_return: no current proc");
 
@@ -155,7 +149,7 @@ void trap_user_return(void)
     // 让 sret 返回到 U-mode，并在 U-mode 打开中断
     uint64 x = r_sstatus();
     x &= ~SSTATUS_SPP; // SPP = 0 -> user mode
-    x |= SSTATUS_SPIE; // 允许用户态中断
+    x &= ~SSTATUS_SPIE; // 返回后保持用户态中断关闭
     w_sstatus(x);
 
     // S 异常返回地址：下一次在用户态执行的位置
