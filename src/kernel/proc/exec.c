@@ -190,6 +190,7 @@ int proc_exec(char *path, char **argv)
 	p->tf->a1 = sp;
 	p->tf->sp = sp;
 	p->tf->user_to_kern_epc = eh.entry;
+	printf("[exec] entry=%p sp=%p argc=%d\n", eh.entry, sp, argc);
 
 	uvm_destroy_pgtbl(old_pgtbl);
 	pmem_free((uint64)old_tf, true);

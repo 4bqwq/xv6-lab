@@ -1,4 +1,13 @@
 #include "sys.h"
+#include "help.h"
+
+static int kstrlen(const char *s)
+{
+	int n = 0;
+	while (s[n])
+		n++;
+	return n;
+}
 
 int main()
 {
@@ -21,13 +30,13 @@ int main()
 		syscall(SYS_write, 1, sizeof(str_1), str_1);
 	} else if (pid == 0) {
 		syscall(SYS_write, 1, 4, "run ");
-		syscall(SYS_write, 1, sizeof(path), path);
+		syscall(SYS_write, 1, kstrlen(path), path);
 		for (int i = 0; argv[i] != 0; i++) {
 			syscall(SYS_write, 1, 1, " ");
-			syscall(SYS_write, 1, sizeof(argv[i]), argv[i]);
+			syscall(SYS_write, 1, kstrlen(argv[i]), argv[i]);
 		}
 		syscall(SYS_write, 1, 1, "\n");
-		syscall(SYS_write, 1, sizeof(str_2), str_2);
+		syscall(SYS_write, 1, kstrlen(str_2), str_2);
 		ret = (int)syscall(SYS_exec, path, argv);
 		if (ret != 0) {
 			syscall(SYS_write, 1, sizeof(str_5), str_5);
@@ -37,9 +46,9 @@ int main()
 		unsigned int exit_state = 0;
 		syscall(SYS_wait, &exit_state);
 		if (exit_state == 0)
-			syscall(SYS_write, 1, sizeof(str_3), str_3);
+			syscall(SYS_write, 1, kstrlen(str_3), str_3);
 		else
-			syscall(SYS_write, 1, sizeof(str_4), str_4);
+			syscall(SYS_write, 1, kstrlen(str_4), str_4);
 	}
 
 	while(1);

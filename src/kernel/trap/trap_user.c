@@ -112,7 +112,9 @@ void trap_user_handler(void)
         }
         default:
             printf("\nunexpected exception (from user): %s\n", exception_info[trap_id]);
-            printf("trap_id = %d, sepc = %p, stval = %p\n", trap_id, sepc, stval);
+            printf("trap_id = %d, sepc = %p, stval = %p, sp = %p, gp = %p, ra = %p\n",
+                   trap_id, sepc, stval, tf->sp, tf->gp, tf->ra);
+            printf("a0 = %p, a1 = %p, a2 = %p\n", tf->a0, tf->a1, tf->a2);
             panic("trap_user_handler");
         }
     }

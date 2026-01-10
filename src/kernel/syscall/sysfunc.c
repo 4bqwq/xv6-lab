@@ -399,9 +399,11 @@ uint64 sys_exec()
     arg_str(0, path, MAXLEN_FILENAME);
     arg_uint64(1, &uargv);
 
-    char argv_buf[ELF_MAXARGS][ELF_MAXARG_LEN];
+    char (*argv_buf)[ELF_MAXARG_LEN] = (char (*)[ELF_MAXARG_LEN])pmem_alloc(true);
+    if (argv_buf == NULL)
+        return (uint64)-1;
+
     char *argv[ELF_MAXARGS + 1];
-    memset(argv_buf, 0, sizeof(argv_buf));
     memset(argv, 0, sizeof(argv));
 
     for (int i = 0; i < ELF_MAXARGS; i++) {
@@ -415,7 +417,9 @@ uint64 sys_exec()
         argv[i] = argv_buf[i];
     }
 
-    return (uint64)proc_exec(path, argv);
+    uint64 ret = (uint64)proc_exec(path, argv);
+    pmem_free((uint64)argv_buf, true);
+    return ret;
 }
 
 uint64 sys_open()
