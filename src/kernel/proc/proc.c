@@ -43,7 +43,6 @@ static void __attribute__((unused)) proc_return()
 {
     proc_t *p = myproc();
     assert(p != NULL, "proc_return: no current proc");
-    printf("proc_return: pid=%d\n", p->pid);
     spinlock_release(&p->lk);
     trap_user_return();
 }
@@ -734,7 +733,6 @@ void proc_scheduler()
             proc_t *p = &proc_list[i];
             spinlock_acquire(&p->lk);
             if (p->state == RUNNABLE) {
-                printf("scheduler: run pid=%d\n", p->pid);
                 // 调试：检查保存的内核上下文是否合法，防止栈/上下文被破坏后继续调度导致不可预期的跳转
                 if (!(p->ctx.sp > p->kstack && p->ctx.sp <= p->kstack + PGSIZE)) {
                     printf("[sched-debug] bad ctx.sp pid=%d sp=%p kstack=[%p, %p)\n",

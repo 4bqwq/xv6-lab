@@ -186,14 +186,13 @@ int proc_exec(char *path, char **argv)
 	p->heap_top = new_heap_top;
 	p->ustack_npage = 1;
 
-	p->tf->a0 = argc;
-	p->tf->a1 = sp;
-	p->tf->sp = sp;
-	p->tf->user_to_kern_epc = eh.entry;
-	printf("[exec] success path=%s argc=%d\n", path, argc);
+    p->tf->a0 = argc;
+    p->tf->a1 = sp;
+    p->tf->sp = sp;
+    p->tf->user_to_kern_epc = eh.entry;
 
-	uvm_destroy_pgtbl(old_pgtbl);
-	pmem_free((uint64)old_tf, true);
+    uvm_destroy_pgtbl(old_pgtbl);
+    pmem_free((uint64)old_tf, true);
 
 	/* 更新进程名 */
 	const char *base = path;

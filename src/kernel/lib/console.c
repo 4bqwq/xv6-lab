@@ -7,33 +7,40 @@
 
 static console_t cons;
 
+#define CONSOLE_PRESET 1
+
 void cons_init()
 {
-	spinlock_init(&cons.lk, "console");
-	cons.read_idx = 0;
-	cons.writ_idx = 0;
-	cons.edit_idx = 0;
+    spinlock_init(&cons.lk, "console");
+    cons.read_idx = 0;
+    cons.writ_idx = 0;
+    cons.edit_idx = 0;
 
-	/* 预填充一串默认输入, 便于无人值守的自动测试 */
-	const char *preset =
-		"hello world\n"
-		"Hello\n"
-		"Guess who I am\n"
-		"How many free memory left\n"
-		"Good job\n";
-	for (const char *p = preset; *p; p++) {
-		cons.buf[cons.edit_idx++ % CONSOLE_INPUT_BUF] = *p;
-	}
-	cons.writ_idx = cons.edit_idx;
+#if CONSOLE_PRESET
+    const char *preset =
+        "Hello\n"
+        "Guess who I am\n"
+        "How many free memory left\n"
+        "Good job\n";
+    for (const char *p = preset; *p; p++) {
+        cons.buf[cons.edit_idx++ % CONSOLE_INPUT_BUF] = *p;
+    }
+    cons.writ_idx = cons.edit_idx;
+#endif
 }
+
 
 static void cons_putc(int c)
 {
-	if (c == BACKSPACE) {
-		uart_putc_sync('\b');
-		uart_putc_sync(' ');
-		uart_putc_sync('\b');
-	} else {
+    // 忽略字符串末尾的 '\0'，避免在控制台上输出异常字符
+    if (c == 0)
+        return;
+
+    if (c == BACKSPACE) {
+        uart_putc_sync('\b');
+        uart_putc_sync(' ');
+        uart_putc_sync('\b');
+    } else {
 		uart_putc_sync(c);
 	}
 }
@@ -68,39 +75,35 @@ uint32 cons_write(uint32 len, uint64 src, bool is_user_src)
 /* 数据读取: cons.buf -> dst */
 uint32 cons_read(uint32 len, uint64 dst, bool is_user_dst)
 {
-	uint32 read_len = 0;
-	proc_t *p = myproc();
-	char c;
-	static int dbg = 0;
+    uint32 read_len = 0;
+    proc_t *p = myproc();
+    char c;
 
 	spinlock_acquire(&cons.lk);
 	while (read_len < len)
 	{
-		while (cons.read_idx == cons.writ_idx)
-			proc_sleep(&cons.read_idx, &cons.lk);
+        while (cons.read_idx == cons.writ_idx)
+            proc_sleep(&cons.read_idx, &cons.lk);
+        
+        c = cons.buf[cons.read_idx++ % CONSOLE_INPUT_BUF];
+
+        // 回显输入的字符，模拟交互式终端行为
+        cons_putc(c);
+
+        if (is_user_dst)
+            uvm_copyout(p->pgtbl, dst, (uint64)&c, 1);
+        else
+            memmove((void*)dst, &c, 1);
 		
-		c = cons.buf[cons.read_idx++ % CONSOLE_INPUT_BUF];
+        dst++;
+        read_len++;
 
-		if (is_user_dst)
-			uvm_copyout(p->pgtbl, dst, (uint64)&c, 1);
-		else
-			memmove((void*)dst, &c, 1);
-		
-		dst++;
-		read_len++;
+        if (c == '\n')
+            break;
+    }
+    spinlock_release(&cons.lk);
 
-		if (c == '\n')
-			break;
-	}
-	spinlock_release(&cons.lk);
-
-	if (dbg < 5) {
-		printf("[cons_read] return %d len=%d first=%c\n", read_len, len,
-			read_len > 0 ? (char)(is_user_dst ? '\0' : *(char*)dst) : '?');
-		dbg++;
-	}
-
-	return read_len;
+    return read_len;
 }
 
 /* 数据输入: UART -> cons.buf */

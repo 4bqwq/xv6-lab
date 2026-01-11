@@ -90,42 +90,41 @@ user_return:
         sfence.vma zero, zero
 
 #---------------------ld 过程 (begin)----------------------
-        
-        ld t0, 112(a0)
-        csrw sscratch, t0 
+        mv t2, a0               # 保存trapframe指针
+        ld t0, 112(t2)          # 暂存用户态a0
+        csrw sscratch, t2       # 下次trap时通过sscratch拿到trapframe
 
-        ld ra, 40(a0)
-        ld sp, 48(a0)
-        ld gp, 56(a0)
-        ld tp, 64(a0)
-        ld t0, 72(a0)
-        ld t1, 80(a0)
-        ld t2, 88(a0)
-        ld s0, 96(a0)
-        ld s1, 104(a0)
-        ld a1, 120(a0)
-        ld a2, 128(a0)
-        ld a3, 136(a0)
-        ld a4, 144(a0)
-        ld a5, 152(a0)
-        ld a6, 160(a0)
-        ld a7, 168(a0)
-        ld s2, 176(a0)
-        ld s3, 184(a0)
-        ld s4, 192(a0)
-        ld s5, 200(a0)
-        ld s6, 208(a0)
-        ld s7, 216(a0)
-        ld s8, 224(a0)
-        ld s9, 232(a0)
-        ld s10, 240(a0)
-        ld s11, 248(a0)
-        ld t3, 256(a0)
-        ld t4, 264(a0)
-        ld t5, 272(a0)
-        ld t6, 280(a0)
-
-        csrrw a0, sscratch, a0
+        ld ra, 40(t2)
+        ld sp, 48(t2)
+        ld gp, 56(t2)
+        ld tp, 64(t2)
+        ld s0, 96(t2)
+        ld s1, 104(t2)
+        ld a1, 120(t2)
+        ld a2, 128(t2)
+        ld a3, 136(t2)
+        ld a4, 144(t2)
+        ld a5, 152(t2)
+        ld a6, 160(t2)
+        ld a7, 168(t2)
+        ld s2, 176(t2)
+        ld s3, 184(t2)
+        ld s4, 192(t2)
+        ld s5, 200(t2)
+        ld s6, 208(t2)
+        ld s7, 216(t2)
+        ld s8, 224(t2)
+        ld s9, 232(t2)
+        ld s10, 240(t2)
+        ld s11, 248(t2)
+        ld t3, 256(t2)
+        ld t4, 264(t2)
+        ld t5, 272(t2)
+        ld t6, 280(t2)
+        ld t1, 80(t2)
+        mv a0, t0               # 恢复用户态a0
+        ld t0, 72(t2)
+        ld t2, 88(t2)
 
 #---------------------ld 过程 (end)----------------------
 

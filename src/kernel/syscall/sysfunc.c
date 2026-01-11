@@ -417,7 +417,6 @@ uint64 sys_exec()
         argv[i] = argv_buf[i];
     }
 
-    printf("[sys_exec] path=%s\n", path);
     uint64 ret = (uint64)proc_exec(path, argv);
     pmem_free((uint64)argv_buf, true);
     return ret;

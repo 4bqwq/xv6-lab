@@ -31,7 +31,7 @@ void trap_user_handler(void)
     uint64 sstatus = r_sstatus();
     uint64 scause  = r_scause();
     uint64 stval   = r_stval();
-    
+
     //trial
     //printf("trap_user_handler: scause = %lx\n", scause);
 
@@ -56,8 +56,6 @@ void trap_user_handler(void)
         case 5: // S-mode timer interrupt
             timer_interrupt_handler();
             // 用户态被时钟打断，交出CPU让调度器决定下一个运行者
-            if (c->proc != NULL && c->proc->state == RUNNING)
-                proc_yield();
             break;
         case 9: // S-mode external interrupt
             external_interrupt_handler();
@@ -132,11 +130,6 @@ void trap_user_return(void)
 
     proc_t      *p  = c->proc;
     trapframe_t *tf = p->tf;
-    static int userret_dbg = 0;
-    if (userret_dbg < 5) {
-        printf("[userret] pid=%d name=%s sepc=%p\n", p->pid, p->name, tf->user_to_kern_epc);
-        userret_dbg++;
-    }
 
     // 切换前先关中断，避免切换过程中被打断
     intr_off();
@@ -156,7 +149,7 @@ void trap_user_return(void)
     // 让 sret 返回到 U-mode，并在 U-mode 打开中断
     uint64 x = r_sstatus();
     x &= ~SSTATUS_SPP; // SPP = 0 -> user mode
-    x &= ~SSTATUS_SPIE; // 返回后保持用户态中断关闭
+    x |= SSTATUS_SPIE; // 返回后在用户态打开中断
     w_sstatus(x);
 
     // S 异常返回地址：下一次在用户态执行的位置

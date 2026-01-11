@@ -16,12 +16,9 @@ static __attribute__((always_inline)) inline int kstrlen(const char *s)
 
 int main()
 {
-	char path[] = "./test_1";
-	char arg0[] = "test_1";
-	char arg1[] = "111";
-	char arg2[] = "222";
-	char arg3[] = "333";
-	char *argv[] = {arg0, arg1, arg2, arg3, 0};
+	char path[] = "./test_4";
+	char arg0[] = "test_4";
+	char *argv[] = {arg0, 0};
 	
 	char str_1[] = "initcode: fork fail!\n";
 	char str_2[] = "\n======== test start  ========\n\n";
